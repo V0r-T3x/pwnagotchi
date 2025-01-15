@@ -46,6 +46,7 @@ class Waveshare2in7Partial(DisplayImpl):
     def render(self, canvas):
         # have to rotate, because lib work with portrait mode only
         # also I have 180 degrees screen rotation inn config, not tested with other valuesjk:w
+        canvas = canvas.convert("1")
         rotated = canvas.rotate(90, expand=True)
         if self.counter == 0:
             self._display.smart_update(rotated)
