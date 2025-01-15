@@ -176,6 +176,10 @@ def display_for(config):
         from pwnagotchi.ui.hw.waveshare2in7 import Waveshare27inch
         return Waveshare27inch(config)
 
+    elif config['ui']['display']['type'] == 'waveshare2in7Partial':
+        from pwnagotchi.ui.hw.waveshare2in7Partial import Waveshare2in7Partial
+        return Waveshare2in7Partial(config)
+
     elif config['ui']['display']['type'] == 'waveshare2in7_v2':
         from pwnagotchi.ui.hw.waveshare2in7_V2 import Waveshare27inchV2
         return Waveshare27inchV2(config)

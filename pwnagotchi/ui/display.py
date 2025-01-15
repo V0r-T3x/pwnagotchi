@@ -92,6 +92,9 @@ class Display(View):
     def is_waveshare2in7(self):
         return self._implementation.name == 'waveshare2in7'
 
+    def is_waveshare2in7Partial(self):
+        return self._implementation.name == 'waveshare2in7Partial'
+
     def is_waveshare2in7V2(self):
         return self._implementation.name == 'waveshare2in7_v2'
 
