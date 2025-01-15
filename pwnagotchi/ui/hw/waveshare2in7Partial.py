@@ -1,5 +1,4 @@
 import logging
-
 import pwnagotchi.ui.fonts as fonts
 from pwnagotchi.ui.hw.base import DisplayImpl
 from PIL import Image
@@ -33,46 +32,35 @@ class Waveshare2in7Partial(DisplayImpl):
         }
         return self._layout
 
-
-
     def initialize(self):
-        logging.info("initializing waveshare v1 2.7 inch display")
-        #from rpi_epd2in7.epd import EPD
+        logging.info("Initializing Waveshare 2.7 inch display with partial refresh support")
         from pwnagotchi.ui.hw.libs.waveshare.epaper.v2in7p.epd2in7 import EPD
         self._display = EPD(fast_refresh=True)
         self._display.init()
 
-
     def render(self, canvas):
-        # have to rotate, because lib work with portrait mode only
-        # also I have 180 degrees screen rotation inn config, not tested with other valuesjk:w
+        # Convert canvas to 1-bit mode and rotate for correct display orientation
         canvas = canvas.convert("1")
         rotated = canvas.rotate(90, expand=True)
+
+        # Full refresh on the first render
         if self.counter == 0:
             self._display.smart_update(rotated)
-
-        # print invert
-        # print true image
+        # Alternate inverted image for a flashing effect every 35th frame
         elif self.counter % 35 == 0:
-            inverted_image = rotated.point(lambda x: 255-x)
+            inverted_image = rotated.point(lambda x: 255 - x)
             self._display.display_partial_frame(inverted_image, 0, 0, 264, 176, fast=True)
             self._display.display_partial_frame(rotated, 0, 0, 264, 176, fast=True)
-        
-        # partial update full screen
+        # Perform partial refresh of the entire screen every 7th frame
         elif self.counter % 7 == 0:
-            # face + text under
-            #self._display.display_partial_frame(rotated, 35, 35, 190, 115, fast=True)
-            # full screen partial update
             self._display.display_partial_frame(rotated, 0, 0, 264, 176, fast=True)
-        
-        # partial update face 
-        self._display.display_partial_frame(rotated, 110, 84, 92, 40, fast=True)
-
-        if self.counter >= 100:
-            self.counter = 0
+        # Update only a specific region (e.g., face area) on other frames
         else:
-            self.counter += 1
+            self._display.display_partial_frame(rotated, 110, 84, 92, 40, fast=True)
 
+        # Reset counter after 100 frames to avoid overflow
+        self.counter = (self.counter + 1) % 100
 
     def clear(self):
-        pass
+        if self._display:
+            self._display.Clear(0xFF)
