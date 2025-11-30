@@ -19,12 +19,13 @@ import pwnagotchi.ui.fonts as fonts
 
 class FixServices(plugins.Plugin):
     __author__ = 'jayofelony'
-    __version__ = '1.0'
+    __version__ = '1.0.1'
     __license__ = 'GPL3'
-    __description__ = 'Fix blindness, firmware crashes and brain not being loaded'
+    __description__ = 'Fix blindness, firmware crashes and brain not being loaded. Auto-disables for external WiFi adapters.'
     __name__ = 'Fix_Services'
     __help__ = """
     Reload brcmfmac module when blindbug is detected, instead of rebooting. Adapted from WATCHDOG.
+    Automatically disables itself when an external WiFi adapter is detected instead of the onboard brcmfmac chip.
     """
 
     def __init__(self):
@@ -39,14 +40,71 @@ class FixServices(plugins.Plugin):
         self.isReloadingMon = False
         self.connection = None
         self.LASTTRY = 0
+        self.is_disabled = self._check_external_adapter()
+
+    def _check_external_adapter(self): 
+        """
+        Check if an external WiFi adapter is being used instead of the onboard brcmfmac chip.
+        Returns True if external adapter detected (plugin should be disabled), False otherwise.
+        """
+        try:
+            # Check if wlan0 interface exists and get its driver
+            cmd_output = subprocess.check_output("ls /sys/class/net/", shell=True, text=True)
+            interfaces = cmd_output.strip().split('\n')
+            
+            # Look for wlan0 interface
+            if 'wlan0' in interfaces:
+                try:
+                    # Get the driver name for wlan0
+                    # If it's not brcmfmac, it's an external adapter
+                    driver_path = "/sys/class/net/wlan0/device/driver"
+                    if os.path.exists(driver_path):
+                        driver_link = os.readlink(driver_path)
+                        driver_name = os.path.basename(driver_link)
+                        
+                        logging.info(f"[Fix_Services] Detected WiFi driver: {driver_name}")
+                        
+                        if driver_name != "brcmfmac":
+                            logging.info(f"[Fix_Services] External WiFi adapter detected ({driver_name}). Plugin will be disabled.")
+                            return True
+                        else:
+                            logging.info("[Fix_Services] Onboard brcmfmac detected. Plugin will remain active.")
+                            return False
+                    else:
+                        lsmod_output = subprocess.check_output("lsmod | grep brcmfmac", shell=True, text=True)
+                        if lsmod_output.strip():
+                            logging.info("[Fix_Services] brcmfmac module detected via lsmod. Plugin will remain active.")
+                            return False
+                        else:
+                            logging.info("[Fix_Services] brcmfmac module not found. External adapter likely in use. Plugin will be disabled.")
+                            return True
+                            
+                except subprocess.CalledProcessError:
+                    logging.info("[Fix_Services] brcmfmac module not found. External adapter likely in use. Plugin will be disabled.")
+                    return True
+                except Exception as e:
+                    logging.warning(f"[Fix_Services] Error checking driver: {e}. Assuming external adapter. Plugin will be disabled.")
+                    return True
+            else:
+                logging.warning("[Fix_Services] wlan0 interface not found. Plugin will be disabled.")
+                return True
+                
+        except Exception as e:
+            logging.error(f"[Fix_Services] Error detecting WiFi adapter: {e}. Plugin will be disabled.")
+            return True
 
     def on_loaded(self):
         """
         Gets called when the plugin gets loaded
         """
+        if self.is_disabled:
+            logging.info("[Fix_Services] plugin loaded but disabled due to external WiFi adapter.")
+            return
         logging.info("[Fix_Services] plugin loaded.")
 
     def on_ready(self, agent):
+        if self.is_disabled:
+            return
         last_lines = ''.join(list(TextIOWrapper(subprocess.Popen(['journalctl', '-n10', '-k'],
                                                                  stdout=subprocess.PIPE).stdout))[-10:])
         try:
@@ -66,6 +124,8 @@ class FixServices(plugins.Plugin):
     # search syslog events for the brcmf channel fail, and reset when it shows up
     # apparently this only gets messages from bettercap going to syslog, not from syslog
     def on_bcap_sys_log(self, agent, event):
+        if self.is_disabled:
+            return
         if re.search('wifi error while hopping to channel', event['data']['Message']):
             logging.debug("[Fix_Services]SYSLOG MATCH: %s" % event['data']['Message'])
             logging.debug("[Fix_Services]**** restarting wifi.recon")
@@ -87,6 +147,8 @@ class FixServices(plugins.Plugin):
                 self._tryTurningItOffAndOnAgain(agent)
 
     def on_epoch(self, agent, epoch, epoch_data):
+        if self.is_disabled:
+            return
         last_lines = ''.join(list(TextIOWrapper(subprocess.Popen(['journalctl', '-n10', '-k'],
                                                                  stdout=subprocess.PIPE).stdout))[-10:])
         other_last_lines = ''.join(list(TextIOWrapper(subprocess.Popen(['journalctl', '-n10'],
@@ -216,6 +278,8 @@ class FixServices(plugins.Plugin):
             logging.error("[logPrintView] ERROR %s" % repr(err))
 
     def _tryTurningItOffAndOnAgain(self, connection):
+        if self.is_disabled:
+            return
         # avoid overlapping restarts, but allow it if it's been a while
         # (in case the last attempt failed before resetting "isReloadingMon")
         if self.isReloadingMon and (time.time() - self.LASTTRY) < 180:
@@ -377,6 +441,8 @@ class FixServices(plugins.Plugin):
 
     # called to setup the ui elements
     def on_ui_setup(self, ui):
+        if self.is_disabled:
+            return
         with ui._lock:
             # add custom UI elements
             if "position" in self.options:
@@ -389,6 +455,8 @@ class FixServices(plugins.Plugin):
 
     # called when the ui is updated
     def on_ui_update(self, ui):
+        if self.is_disabled:
+            return
         return
 
     def on_unload(self, ui):
