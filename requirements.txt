@@ -1,7 +1,7 @@
 # Core AI and Machine Learning
 stable-baselines3
-torch
-tensorboard
+#torch
+#tensorboard
 
 # Web UI and API
 flask
