@@ -36,14 +36,14 @@ PWNGRID_VERSION ?= 1.10.3
  
 # System dependencies for Pwnagotchi on Kali Linux, now including the 'bettercap' package from APT.
 # Build-essentials are no longer needed for bettercap but kept for general compatibility.
-DEPS := git python3 python3-dev python3-venv python3-pip aircrack-ng libpcap-dev bettercap bettercap-caplets unzip
+DEPS := git python3 python3-dev python3-venv python3-pip aircrack-ng libpcap-dev bettercap bettercap-caplets unzip ninja-build libglib2.0-dev libdbus-1-dev
 
 # Use .DEFAULT_GOAL to make `help` the default action.
 .DEFAULT_GOAL := help
 
 # Phony targets don't represent files.
 .PHONY: all install uninstall clean reinstall help \
-		install-deps setup-nexmon setup-bettercap setup-pwngrid setup-pwnagotchi setup-config setup-service \
+		install-deps setup-swap setup-nexmon setup-bettercap setup-pwngrid setup-pwnagotchi setup-config setup-service \
 		uninstall-service uninstall-pwnagotchi \
 		start stop restart status logs verify-nexmon
 
@@ -60,7 +60,7 @@ clean: ## Remove local build artifacts and __pycache__ directories.
 
 ##@ Installation
 
-install: install-deps setup-nexmon setup-bettercap setup-pwngrid setup-pwnagotchi setup-config setup-service ## Run the full installation process.
+install: install-deps setup-swap setup-nexmon setup-bettercap setup-pwngrid setup-pwnagotchi setup-config setup-service ## Run the full installation process.
 	@echo "\n✅ Pwnagotchi installation complete."
 	@echo "   A reboot is required to load the new drivers and start the services."
 	@echo "   Run 'sudo reboot' to apply all changes."
@@ -71,6 +71,36 @@ install-deps:
 	@echo "--> Updating package lists and installing core system dependencies (including Bettercap build dependencies)..."
 	sudo apt-get update
 	sudo apt-get install -y $(DEPS)
+
+setup-swap:
+	@echo "--> Checking for and setting up 2GB swap file..."
+	@DESIRED_SWAP_SIZE_GB=2; \
+	DESIRED_SWAP_SIZE_BYTES=$$((DESIRED_SWAP_SIZE_GB * 1024 * 1024 * 1024)); \
+	SWAP_FILE="/swapfile"; \
+	CREATE_SWAP=false; \
+	if [ -f "$$SWAP_FILE" ]; then \
+		CURRENT_SIZE_BYTES=$$(stat -c%s "$$SWAP_FILE" 2>/dev/null || echo 0); \
+		if [ "$$CURRENT_SIZE_BYTES" -lt "$$DESIRED_SWAP_SIZE_BYTES" ]; then \
+			echo "    Swap file exists but is smaller than $$DESIRED_SWAP_SIZE_GB""GB. Recreating..."; \
+			sudo swapoff $$SWAP_FILE || true; \
+			sudo rm -f $$SWAP_FILE; \
+			sudo sed -i '\|'$$SWAP_FILE'|d' /etc/fstab; \
+			CREATE_SWAP=true; \
+		else \
+			echo "    $$DESIRED_SWAP_SIZE_GB""GB swap file already exists and is correctly sized. Skipping."; \
+		fi; \
+	else \
+		CREATE_SWAP=true; \
+	fi; \
+	if [ "$$CREATE_SWAP" = true ]; then \
+		echo "    Creating new $$DESIRED_SWAP_SIZE_GB""GB swap file at $$SWAP_FILE..."; \
+		sudo fallocate -l $${DESIRED_SWAP_SIZE_GB}G $$SWAP_FILE && \
+		sudo chmod 600 $$SWAP_FILE && \
+		sudo mkswap $$SWAP_FILE && \
+		sudo swapon $$SWAP_FILE && \
+		echo "$$SWAP_FILE none swap sw 0 0" | sudo tee -a /etc/fstab && \
+		echo "✅ Swap file created and enabled."; \
+	fi;
 
 setup-nexmon:
 	@echo "--> Updating package lists and installing Nexmon DKMS drivers and firmware..."
@@ -146,10 +176,26 @@ setup-pwnagotchi: install-deps
 	@echo "--> Creating Python virtual environment at $(VENV_DIR)..."
 	sudo $(PYTHON_EXECUTABLE) -m venv $(VENV_DIR)
 	@echo "--> Installing Pwnagotchi Python dependencies..."
-	sudo $(VENV_DIR)/bin/pip install --upgrade pip wheel
-	sudo $(VENV_DIR)/bin/pip install -r $(APP_DIR)/requirements.txt
-	@echo "--> Installing Pwnagotchi application..."
-	sudo $(VENV_DIR)/bin/pip install --editable $(APP_DIR)
+	@# Upgrade pip first.
+	sudo $(VENV_DIR)/bin/pip install --upgrade pip setuptools wheel
+	@echo "--> Pre-installing NumPy wheel to avoid compilation on RPi..."
+	@# Detect architecture to download the correct wheel. armv7l is 32-bit, aarch64 is 64-bit.
+	@# This avoids memory/CPU exhaustion from compiling NumPy from source.
+	@UNAME_M=$(shell uname -m); \
+	if [ "$$UNAME_M" = "armv7l" ]; then \
+		NUMPY_WHEEL="numpy-2.3.5-cp313-cp313-linux_armv7l.whl"; \
+		NUMPY_URL="https://www.piwheels.org/simple/numpy/$$NUMPY_WHEEL"; \
+		echo "    Downloading $$NUMPY_WHEEL for 32-bit ARM (armv7l)..."; \
+		wget -q $$NUMPY_URL -O /tmp/$$NUMPY_WHEEL; \
+		sudo $(VENV_DIR)/bin/pip install /tmp/$$NUMPY_WHEEL; \
+		rm /tmp/$$NUMPY_WHEEL; \
+	else \
+		echo "    Architecture is not armv7l ($$UNAME_M), installing NumPy via standard pip."; \
+		sudo $(VENV_DIR)/bin/pip install numpy; \
+	fi
+	@# Install the pwnagotchi project in editable mode.
+	@# This will read dependencies from pyproject.toml and install them.
+	sudo -H $(VENV_DIR)/bin/pip install --editable $(APP_DIR)
 	@echo "--> Setting ownership for application directory..."
 	sudo chown -R $(APP_USER):$(APP_USER) $(APP_DIR)
 	@echo "✅ Pwnagotchi application setup complete."
