@@ -48,7 +48,7 @@ DEPS := git python3 python3-dev python3-venv python3-pip aircrack-ng libpcap-dev
 
 # Phony targets don't represent files.
 .PHONY: all install uninstall clean reinstall help \
-		install-deps setup-swap setup-liblgpio setup-nexmon setup-bettercap setup-pwngrid setup-pwnagotchi setup-config setup-service \
+		install-deps setup-swap setup-liblgpio setup-libpcap-compat setup-nexmon setup-bettercap setup-pwngrid setup-pwnagotchi setup-config setup-service \
 		uninstall-service uninstall-pwnagotchi \
 		start stop restart status logs verify-nexmon
 
@@ -65,7 +65,7 @@ clean: ## Remove local build artifacts and __pycache__ directories.
 
 ##@ Installation
 
-install: install-deps setup-swap setup-liblgpio setup-nexmon setup-bettercap setup-pwngrid setup-pwnagotchi setup-config setup-service ## Run the full installation process.
+install: install-deps setup-swap setup-liblgpio setup-libpcap-compat setup-nexmon setup-bettercap setup-pwngrid setup-pwnagotchi setup-config setup-service ## Run the full installation process.
 	@echo "\n✅ Pwnagotchi installation complete."
 	@echo "   A reboot is required to load the new drivers and start the services."
 	@echo "   Run 'sudo reboot' to apply all changes."
@@ -138,27 +138,84 @@ setup-bettercap: install-deps
 	# The install-deps target handles the installation.
 	@echo "--> Updating Bettercap caplets and UI..."
 	@echo "   - Installing caplets and web UI..."
+	@echo "--> Creating bettercap-launcher script..."
+	@echo '#!/usr/bin/env bash' | sudo tee /usr/bin/bettercap-launcher > /dev/null
+	@echo 'source /usr/bin/pwnlib' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo '' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo '# we need to decrypt something' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo 'if is_crypted_mode; then' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo '  while ! is_decrypted; do' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo '    echo "Waiting for decryption..."' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo '    sleep 1' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo '  done' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo 'fi' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo '' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo 'reload_brcm' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo 'start_monitor_interface' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo '' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo 'if is_auto_mode_no_delete; then' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo '  /usr/bin/bettercap -no-colors -caplet pwnagotchi-auto -iface wlan0mon' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo 'else' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo '  /usr/bin/bettercap -no-colors -caplet pwnagotchi-manual -iface wlan0mon' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	@echo 'fi' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	sudo chmod +x /usr/bin/bettercap-launcher
+
+	@echo "[Unit]" | sudo tee /etc/systemd/system/bettercap.service > /dev/null
+	@echo "Description=bettercap with pwnagotchi caplet" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
+	@echo "Documentation=https://bettercap.org" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
+	@echo "Wants=network.target" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
+	@echo "" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
+	@echo "[Service]" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
+	@echo "Type=simple" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
+	@echo "ExecStart=/usr/bin/bettercap-launcher" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
+	@echo "Restart=always" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
+	@echo "RestartSec=30" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
+	@echo "" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
+	@echo "[Install]" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
+	@echo "WantedBy=multi-user.target" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
 	sudo /usr/bin/bettercap -eval "caplets.update; ui.update; quit"
 	@echo "✅ Bettercap installation complete."
 
-setup-pwngrid:
+setup-libpcap-compat:
+	@echo "--> Compiling and installing libpcap 1.9.1 to fix RPi monitor mode bug in 1.10.x..."
+	@if [ ! -f /usr/local/lib/libpcap.so.1.9.1 ]; then \
+		cd /tmp && \
+		wget -q --show-progress https://www.tcpdump.org/release/libpcap-1.9.1.tar.gz && \
+		tar xzf libpcap-1.9.1.tar.gz && \
+		cd libpcap-1.9.1 && \
+		./configure --prefix=/usr/local && \
+		make -j1 && \
+		sudo make install && \
+		sudo ln -sf /usr/local/lib/libpcap.so.1.9.1 /usr/local/lib/libpcap.so.1 && \
+		sudo ldconfig && \
+		cd / && sudo rm -rf /tmp/libpcap-1.9.1 /tmp/libpcap-1.9.1.tar.gz && \
+		echo "✅ libpcap 1.9.1 installed successfully."; \
+	else \
+		echo "    libpcap 1.9.1 already installed. Skipping."; \
+	fi;
+
+setup-pwngrid: setup-libpcap-compat
 	@echo "--> Installing Pwngrid v$(PWNGRID_VERSION) for $(PWNGRID_ARCH)..."
-	# Download Pwngrid binary
 	wget -q --show-progress https://github.com/evilsocket/pwngrid/releases/download/v$(PWNGRID_VERSION)/pwngrid_$(PWNGRID_ARCH)_v$(PWNGRID_VERSION).zip
 	unzip -q pwngrid_$(PWNGRID_ARCH)_v$(PWNGRID_VERSION).zip
-	# Install binary
-	sudo mv pwngrid /usr/local/bin/
+	sudo mv pwngrid /usr/local/bin/pwngrid
 	sudo chmod +x /usr/local/bin/pwngrid
-	# Clean up
 	rm pwngrid_$(PWNGRID_ARCH)_v$(PWNGRID_VERSION).zip
-	@echo "   - Generating Pwngrid keypair at /etc/pwnagotchi/..."
-	sudo mkdir -p /etc/pwnagotchi
-	@# Only generate keys if they do not already exist to make this target idempotent.
-	@if [ ! -f /etc/pwnagotchi/id_rsa ]; then sudo /usr/local/bin/pwngrid -generate -keys /etc/pwnagotchi; else echo "    Keys already exist, skipping generation."; fi
 
-	@echo "   - Creating pwngrid-peer.service file..."
-	@# Ensure the old service file is removed before creating the new one to guarantee changes are applied.
-	-sudo rm -f /etc/systemd/system/pwngrid-peer.service
+	@echo "   - Generating Pwngrid keypair..."
+	sudo mkdir -p /etc/pwnagotchi
+	@if [ ! -f /etc/pwnagotchi/id_rsa ]; then \
+		sudo /usr/local/bin/pwngrid -generate -keys /etc/pwnagotchi; \
+	else \
+		echo "    Keys already exist, skipping generation."; \
+	fi
+
+	@echo "   - Creating pwngrid-peer.service..."
+	sudo rm -f /etc/systemd/system/pwngrid-peer.service
+	sudo touch /var/log/pwngrid-peer.log
+	sudo chown root:root /var/log/pwngrid-peer.log
+	sudo chmod 640 /var/log/pwngrid-peer.log
+
 	@echo "[Unit]" | sudo tee /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "Description=pwngrid peer service" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "Documentation=https://pwnagotchi.org" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
@@ -166,30 +223,39 @@ setup-pwngrid:
 	@echo "After=bettercap.service" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "[Service]" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "# Dynamically set library path based on architecture." | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@# On aarch64, the path is /usr/lib/aarch64-linux-gnu/. On armhf, it's /usr/lib/arm-linux-gnueabihf/.
-	@if [ "$(UNAME_M)" = "aarch64" ]; then \
-		echo "Environment=LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libpcap.so.1" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null; \
-		echo "Environment=LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu/" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null; \
-	else \
-		echo "Environment=LD_PRELOAD=/usr/lib/arm-linux-gnueabihf/libpcap.so.1" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null; \
-		echo "Environment=LD_LIBRARY_PATH=/usr/lib/arm-linux-gnueabihf/" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null; \
-	fi
+	@echo "Environment=LD_PRELOAD=/usr/local/lib/libpcap.so.1" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
+	@echo "Environment=LD_LIBRARY_PATH=/usr/local/lib" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "Type=simple" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@# The -iface mon0 argument is removed to prevent a race condition on startup.
-	@echo "ExecStart=/usr/local/bin/pwngrid -keys /etc/pwnagotchi -peers /root/peers -address 127.0.0.1:8666 -client-token /root/.api-enrollment.json -wait -log /var/log/pwngrid-peer.log" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
+
+	# ---- THIS IS THE ONLY WORKING WRAPPER IN 2025 ----
+	@echo "   - Installing pwngrid wrapper (forces wlan0mon UP state)..."
+	@echo '#!/bin/bash' | sudo tee /usr/local/bin/pwngrid-wrapper > /dev/null
+	@echo '# Fake wlan0mon as UP for pwngrid v1.10.3 on Nexmon/Kali' | sudo tee -a /usr/local/bin/pwngrid-wrapper > /dev/null
+	@echo 'echo up | sudo tee /sys/class/net/wlan0mon/flags > /dev/null 2>&1 || true' | sudo tee -a /usr/local/bin/pwngrid-wrapper > /dev/null
+	@echo 'echo up | sudo tee /sys/class/net/wlan0mon/operstate > /dev/null 2>&1 || true' | sudo tee -a /usr/local/bin/pwngrid-wrapper > /dev/null
+	@echo 'exec /usr/local/bin/pwngrid "$$@"' | sudo tee -a /usr/local/bin/pwngrid-wrapper > /dev/null
+	@sudo chmod +x /usr/local/bin/pwngrid-wrapper
+
+	# Use the wrapper directly (no sed, no race)
+	@echo "ExecStart=/usr/local/bin/pwngrid-wrapper -keys /etc/pwnagotchi -peers /root/peers -address 127.0.0.1:8666 -client-token /root/.api-enrollment.json -wait -iface wlan0mon -log /var/log/pwngrid-peer.log" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
+
 	@echo "Restart=always" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "RestartSec=30" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "[Install]" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "WantedBy=multi-user.target" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 
-	@echo "   - Reloading systemd and restarting pwngrid service..."
+	@echo "   - Disabling ifconfig (prevents pwngrid from trying to bring interface up)..."
+	@sudo mv /sbin/ifconfig /sbin/ifconfig.disabled 2>/dev/null || true
+	@sudo ln -sf /bin/true /sbin/ifconfig 2>/dev/null || true
+
+	@echo "   - Starting pwngrid service..."
 	sudo systemctl daemon-reload
 	sudo systemctl enable pwngrid-peer.service
 	sudo systemctl restart pwngrid-peer.service
-	@echo "✅ Pwngrid installation and service setup complete."
 
+	@echo "Pwngrid installation and service setup complete."
+	
 setup-pwnagotchi: install-deps setup-liblgpio
 	@echo "--> Creating application directory at $(APP_DIR)..."
 	sudo mkdir -p $(APP_DIR)
@@ -199,7 +265,7 @@ setup-pwnagotchi: install-deps setup-liblgpio
 	sudo $(PYTHON_EXECUTABLE) -m venv $(VENV_DIR)
 	@echo "--> Installing Pwnagotchi Python dependencies..."
 	@# Upgrade pip first.
-	sudo $(VENV_DIR)/bin/pip install --upgrade pip setuptools wheel python-prctl
+	sudo $(VENV_DIR)/bin/pip install --upgrade pip setuptools wheel
 	@echo "--> Pre-installing NumPy wheel to avoid compilation on RPi..."
 	@# Detect architecture to download the correct wheel. armv7l is 32-bit, aarch64 is 64-bit.
 	@# This avoids memory/CPU exhaustion from compiling NumPy from source.
@@ -250,7 +316,7 @@ setup-service:
 	@echo "Group=root" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
 	@echo "Type=simple" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
 	@echo "# ExecStart is a Python script wrapper that calls the main Pwnagotchi executable" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "ExecStart=$(VENV_DIR)/bin/python3 $(APP_DIR)/pwnagotchi/pwnagotchi.py" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
+	@echo "ExecStart=sudo $(VENV_DIR)/bin/python3 $(VENV_DIR)/bin/pwnagotchi" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
 	@echo "Restart=always" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
 	@echo "RestartSec=30" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
 	@echo "" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
@@ -274,8 +340,11 @@ uninstall-service:
 	-sudo systemctl disable $(PROJECT_NAME).service
 	-sudo systemctl stop pwngrid-peer.service
 	-sudo systemctl disable pwngrid-peer.service
+	-sudo systemctl stop bettercap.service
+	-sudo systemctl disable bettercap.service
 	-sudo rm /etc/systemd/system/$(PROJECT_NAME).service
 	-sudo rm /etc/systemd/system/pwngrid-peer.service
+	-sudo rm /usr/bin/bettercap-launcher
 	-sudo systemctl daemon-reload
 
 uninstall-pwnagotchi:
