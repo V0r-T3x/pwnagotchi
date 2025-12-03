@@ -1,4 +1,5 @@
 # Makefile for Pwnagotchi on Kali Linux (RPi Zero 2 W)
+# https://kali.download/arm-images/kali-2025.3/kali-linux-2025.3-raspberry-pi-zero-2-w-armhf.img.xz
 # This Makefile automates the installation and setup of Pwnagotchi,
 # including the Nexmon drivers, Bettercap, and Pwngrid.
 
@@ -13,6 +14,10 @@ APP_USER     ?= $(shell whoami)
 APP_DIR      ?= /opt/$(PROJECT_NAME)
 VENV_DIR     ?= $(APP_DIR)/venv
 CONFIG_DIR   ?= /etc/$(PROJECT_NAME)
+
+# Environment Settings
+# Default Temporary Directory
+TMPDIR ?= /var/tmp
 
 # Python Settings
 PYTHON_EXECUTABLE ?= python3
@@ -36,14 +41,14 @@ PWNGRID_VERSION ?= 1.10.3
  
 # System dependencies for Pwnagotchi on Kali Linux, now including the 'bettercap' package from APT.
 # Build-essentials are no longer needed for bettercap but kept for general compatibility.
-DEPS := git python3 python3-dev python3-venv python3-pip aircrack-ng libpcap-dev bettercap bettercap-caplets unzip ninja-build libglib2.0-dev libdbus-1-dev
+DEPS := git python3 python3-dev python3-venv python3-pip aircrack-ng libpcap-dev bettercap bettercap-caplets unzip ninja-build libglib2.0-dev libdbus-1-dev libjpeg-dev zlib1g-dev libpng-dev libfreetype-dev build-essential python3-dev libyaml-dev libssl-dev libffi-dev i2c-tools swig gpiod libgpiod-dev libgpiod-doc libcap-dev
 
 # Use .DEFAULT_GOAL to make `help` the default action.
 .DEFAULT_GOAL := help
 
 # Phony targets don't represent files.
 .PHONY: all install uninstall clean reinstall help \
-		install-deps setup-swap setup-nexmon setup-bettercap setup-pwngrid setup-pwnagotchi setup-config setup-service \
+		install-deps setup-swap setup-liblgpio setup-nexmon setup-bettercap setup-pwngrid setup-pwnagotchi setup-config setup-service \
 		uninstall-service uninstall-pwnagotchi \
 		start stop restart status logs verify-nexmon
 
@@ -60,7 +65,7 @@ clean: ## Remove local build artifacts and __pycache__ directories.
 
 ##@ Installation
 
-install: install-deps setup-swap setup-nexmon setup-bettercap setup-pwngrid setup-pwnagotchi setup-config setup-service ## Run the full installation process.
+install: install-deps setup-swap setup-liblgpio setup-nexmon setup-bettercap setup-pwngrid setup-pwnagotchi setup-config setup-service ## Run the full installation process.
 	@echo "\n✅ Pwnagotchi installation complete."
 	@echo "   A reboot is required to load the new drivers and start the services."
 	@echo "   Run 'sudo reboot' to apply all changes."
@@ -100,6 +105,23 @@ setup-swap:
 		sudo swapon $$SWAP_FILE && \
 		echo "$$SWAP_FILE none swap sw 0 0" | sudo tee -a /etc/fstab && \
 		echo "✅ Swap file created and enabled."; \
+	fi;
+
+setup-liblgpio:
+	@echo "--> Manually compiling and installing liblgpio C library..."
+	@# This is required because liblgpio is not in the Kali repositories.
+	@if ldconfig -p | grep -q 'liblgpio.so'; then \
+		echo "    liblgpio already installed. Skipping."; \
+	else \
+		cd /tmp && \
+		wget -q https://github.com/joan2937/lg/archive/master.zip -O lg-master.zip && \
+		unzip -q lg-master.zip && \
+		cd lg-master && \
+		make -j1 && \
+		sudo make install && \
+		sudo ldconfig && \
+		cd / && sudo rm -rf /tmp/lg-master /tmp/lg-master.zip && \
+		echo "✅ liblgpio C library installed successfully."; \
 	fi;
 
 setup-nexmon:
@@ -168,7 +190,7 @@ setup-pwngrid:
 	sudo systemctl restart pwngrid-peer.service
 	@echo "✅ Pwngrid installation and service setup complete."
 
-setup-pwnagotchi: install-deps
+setup-pwnagotchi: install-deps setup-liblgpio
 	@echo "--> Creating application directory at $(APP_DIR)..."
 	sudo mkdir -p $(APP_DIR)
 	@echo "--> Cloning Pwnagotchi repository from $(PWNAGOTCHI_REPO)..."
@@ -177,25 +199,33 @@ setup-pwnagotchi: install-deps
 	sudo $(PYTHON_EXECUTABLE) -m venv $(VENV_DIR)
 	@echo "--> Installing Pwnagotchi Python dependencies..."
 	@# Upgrade pip first.
-	sudo $(VENV_DIR)/bin/pip install --upgrade pip setuptools wheel
+	sudo $(VENV_DIR)/bin/pip install --upgrade pip setuptools wheel python-prctl
 	@echo "--> Pre-installing NumPy wheel to avoid compilation on RPi..."
 	@# Detect architecture to download the correct wheel. armv7l is 32-bit, aarch64 is 64-bit.
 	@# This avoids memory/CPU exhaustion from compiling NumPy from source.
 	@UNAME_M=$(shell uname -m); \
 	if [ "$$UNAME_M" = "armv7l" ]; then \
-		NUMPY_WHEEL="numpy-2.3.5-cp313-cp313-linux_armv7l.whl"; \
-		NUMPY_URL="https://www.piwheels.org/simple/numpy/$$NUMPY_WHEEL"; \
-		echo "    Downloading $$NUMPY_WHEEL for 32-bit ARM (armv7l)..."; \
-		wget -q $$NUMPY_URL -O /tmp/$$NUMPY_WHEEL; \
-		sudo $(VENV_DIR)/bin/pip install /tmp/$$NUMPY_WHEEL; \
-		rm /tmp/$$NUMPY_WHEEL; \
+		echo "--> Pre-installing wheels for armv7l to avoid compilation..."; \
+		WHEELS_TO_INSTALL="numpy/numpy-2.3.5-cp313-cp313-linux_armv7l.whl pillow/pillow-11.3.0-cp313-cp313-linux_armv7l.whl cryptography/cryptography-45.0.7-cp313-abi3-linux_armv7l.whl spidev/spidev-3.5-cp313-cp313-linux_armv7l.whl"; \
+		for wheel_path in $$WHEELS_TO_INSTALL; do \
+			WHEEL_FILE=$$(basename $$wheel_path); \
+			PACKAGE_NAME=$$(dirname $$wheel_path); \
+			WHEEL_URL="https://www.piwheels.org/simple/$$PACKAGE_NAME/$$WHEEL_FILE"; \
+			echo "    Downloading $$WHEEL_FILE..."; \
+			if sudo wget -q $$WHEEL_URL -O "/tmp/$$WHEEL_FILE"; then \
+				sudo $(VENV_DIR)/bin/pip install "/tmp/$$WHEEL_FILE"; \
+				sudo rm "/tmp/$$WHEEL_FILE"; \
+			else \
+				echo "⚠️  Could not download $$WHEEL_FILE. Pip will try to build from source."; \
+			fi; \
+		done; \
 	else \
 		echo "    Architecture is not armv7l ($$UNAME_M), installing NumPy via standard pip."; \
 		sudo $(VENV_DIR)/bin/pip install numpy; \
 	fi
 	@# Install the pwnagotchi project in editable mode.
 	@# This will read dependencies from pyproject.toml and install them.
-	sudo -H $(VENV_DIR)/bin/pip install --editable $(APP_DIR)
+	sudo MAKEFLAGS='-j1' TMPDIR=$(TMPDIR) -H $(VENV_DIR)/bin/pip install --editable $(APP_DIR)
 	@echo "--> Setting ownership for application directory..."
 	sudo chown -R $(APP_USER):$(APP_USER) $(APP_DIR)
 	@echo "✅ Pwnagotchi application setup complete."
