@@ -41,7 +41,7 @@ PWNGRID_VERSION ?= 1.10.3
  
 # System dependencies for Pwnagotchi on Kali Linux, now including the 'bettercap' package from APT.
 # Build-essentials are no longer needed for bettercap but kept for general compatibility.
-DEPS := git python3 python3-dev python3-venv python3-pip aircrack-ng libpcap-dev bettercap bettercap-caplets unzip ninja-build libglib2.0-dev libdbus-1-dev libjpeg-dev zlib1g-dev libpng-dev libfreetype-dev build-essential python3-dev libyaml-dev libssl-dev libffi-dev i2c-tools swig gpiod libgpiod-dev libgpiod-doc libcap-dev
+DEPS := git python3 python3-dev python3-venv python3-pip aircrack-ng libpcap-dev bettercap bettercap-caplets unzip ninja-build libglib2.0-dev libdbus-1-dev libjpeg-dev zlib1g-dev libpng-dev libfreetype-dev build-essential python3-dev libyaml-dev libssl-dev libffi-dev i2c-tools swig gpiod libgpiod-dev libgpiod-doc libcap-dev golang
 
 # Use .DEFAULT_GOAL to make `help` the default action.
 .DEFAULT_GOAL := help
@@ -237,13 +237,49 @@ setup-libpcap-compat:
 	fi;
 
 setup-pwngrid: setup-libpcap-compat
-	@echo "--> Installing Pwngrid v$(PWNGRID_VERSION) for $(PWNGRID_ARCH)..."
-	wget -q --show-progress https://github.com/evilsocket/pwngrid/releases/download/v$(PWNGRID_VERSION)/pwngrid_$(PWNGRID_ARCH)_v$(PWNGRID_VERSION).zip
-	unzip -q pwngrid_$(PWNGRID_ARCH)_v$(PWNGRID_VERSION).zip
-	sudo mv pwngrid /usr/local/bin/pwngrid
-	sudo chmod +x /usr/local/bin/pwngrid
-	rm pwngrid_$(PWNGRID_ARCH)_v$(PWNGRID_VERSION).zip
+	@echo "--> Compiling Pwngrid from source to ensure compatibility..."
+	@# This is the definitive fix for SIGSEGV errors on specific ARM/Kali combinations.
+	@# First, ensure the Go compiler is installed via the main dependency target.
+	@if ! command -v go > /dev/null; then \
+		echo "   - Go compiler not found. Please run 'make install-deps' first."; \
+		exit 1; \
+	fi
+	@echo "   - [1/4] Cloning and patching gopacket source..."
+	cd /tmp && rm -rf gopacket-patched && git clone https://github.com/gopacket/gopacket.git gopacket-patched
+	cd /tmp/gopacket-patched && git checkout v1.2.0
+	@# This is the definitive fix for the 64-bit time_t type mismatch on 32-bit ARM.
+	cd /tmp/gopacket-patched/pcap && sudo sed -i 's/C.gopacket_time_secs_t/C.__time64_t/g' pcap_unix.go
+	cd /tmp/gopacket-patched/pcap && sudo sed -i 's/C.gopacket_time_usecs_t/C.__suseconds64_t/g' pcap_unix.go
+	
+	@echo "   - [2/4] Cloning pwngrid repository..."
+	cd /tmp && rm -rf pwngrid && git clone https://github.com/jayofelony/pwngrid.git
 
+	@echo "   - [3/4] Creating patched go.mod with local replace directive..."
+	@echo 'module github.com/jayofelony/pwngrid' | sudo tee /tmp/pwngrid/go.mod > /dev/null
+	@echo '' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo 'go 1.22' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo '' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo 'require (' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo '	github.com/biezhi/gorm-paginator/pagination v0.0.0-20190124091837-7a5c8ed20334' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo '	github.com/evilsocket/islazy v1.11.0' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo '	github.com/go-chi/chi/v5 v5.1.0' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo '	github.com/go-chi/cors v1.2.1' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo '	github.com/golang-jwt/jwt/v5 v5.2.1' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo '	github.com/gopacket/gopacket v1.2.0' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo '	github.com/jinzhu/gorm v1.9.16' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo '	github.com/joho/godotenv v1.5.1' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo ')' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo '' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo 'require golang.org/x/sys v0.22.0 // indirect' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo '' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@echo 'replace github.com/gopacket/gopacket => /tmp/gopacket-patched' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+
+	@echo "   - [4/4] Building binary from patched source..."
+	cd /tmp/pwngrid && go mod tidy
+	cd /tmp/pwngrid && CGO_ENABLED=1 go build -ldflags="-s -w" -o pwngrid ./cmd/pwngrid/
+	@echo "   - Installing compiled binary to /usr/local/bin/..."
+	sudo mv /tmp/pwngrid/pwngrid /usr/local/bin/pwngrid
+	sudo chmod +x /usr/local/bin/pwngrid
 	@echo "   - Generating Pwngrid keypair..."
 	sudo mkdir -p /etc/pwnagotchi
 	@if [ ! -f /etc/pwnagotchi/id_rsa ]; then \
@@ -262,38 +298,39 @@ setup-pwngrid: setup-libpcap-compat
 	@echo "Description=pwngrid peer service" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "Documentation=https://pwnagotchi.org" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "Wants=network.target" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "After=bettercap.service" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
+	# Wait for the network to be fully online and bind to the wlan0 device itself.
+	@echo "After=network-online.target" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
+	@echo "BindsTo=sys-subsystem-net-devices-wlan0.device" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "[Service]" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "Environment=LD_PRELOAD=/usr/local/lib/libpcap.so.1" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "Environment=LD_LIBRARY_PATH=/usr/local/lib" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "Type=simple" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
+	# Create a fake ifconfig to prevent pwngrid from interfering with the monitor interface.
+	# Prepending a custom bin directory to the PATH is safer than replacing system binaries.
+	@echo "   - Neutralizing ifconfig for pwngrid service..."
+	@sudo mkdir -p /usr/local/share/fake-commands
+	@echo '#!/bin/sh' | sudo tee /usr/local/share/fake-commands/ifconfig > /dev/null
+	@echo 'exit 0' | sudo tee -a /usr/local/share/fake-commands/ifconfig > /dev/null
+	@sudo chmod +x /usr/local/share/fake-commands/ifconfig
+	@echo "Environment='PATH=/usr/local/share/fake-commands:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
+
 	# Add wlan0mon readiness check BEFORE pwngrid starts
 	@echo "ExecStartPre=/usr/local/sbin/setup-wlan0mon.sh" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "ExecStartPre=/bin/bash -c 'while [ ! -f /run/wlan0mon.ready ]; do sleep 1; done'" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 
 
-	# ---- THIS IS THE ONLY WORKING WRAPPER IN 2025 ----
-	@echo "   - Installing pwngrid wrapper (forces wlan0mon UP state)..."
-	@echo '#!/bin/bash' | sudo tee /usr/local/bin/pwngrid-wrapper > /dev/null
-	@echo '# Fake wlan0mon as UP for pwngrid v1.10.3 on Nexmon/Kali' | sudo tee -a /usr/local/bin/pwngrid-wrapper > /dev/null
-	@echo 'echo up | sudo tee /sys/class/net/wlan0mon/flags > /dev/null 2>&1 || true' | sudo tee -a /usr/local/bin/pwngrid-wrapper > /dev/null
-	@echo 'echo up | sudo tee /sys/class/net/wlan0mon/operstate > /dev/null 2>&1 || true' | sudo tee -a /usr/local/bin/pwngrid-wrapper > /dev/null
-	@echo 'exec /usr/local/bin/pwngrid "$$@"' | sudo tee -a /usr/local/bin/pwngrid-wrapper > /dev/null
-	@sudo chmod +x /usr/local/bin/pwngrid-wrapper
-
-	# Use the wrapper directly (no sed, no race)
-	@echo "ExecStart=/usr/local/bin/pwngrid-wrapper -keys /etc/pwnagotchi -peers /root/peers -address 127.0.0.1:8666 -client-token /root/.api-enrollment.json -wait -iface wlan0mon -log /var/log/pwngrid-peer.log" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
+	# The wrapper is no longer needed due to the robust setup-wlan0mon.sh and readiness check.
+	# Calling pwngrid directly is now more stable.
+	@echo "   - Removing obsolete pwngrid-wrapper..."
+	@sudo rm -f /usr/local/bin/pwngrid-wrapper
+	@echo "ExecStart=/usr/local/bin/pwngrid -keys /etc/pwnagotchi -peers /root/peers -address 127.0.0.1:8666 -client-token /root/.api-enrollment.json -wait -iface wlan0mon -log /var/log/pwngrid-peer.log" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 
 	@echo "Restart=always" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "RestartSec=30" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "[Install]" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "WantedBy=multi-user.target" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-
-	@echo "   - Disabling ifconfig (prevents pwngrid from trying to bring interface up)..."
-	@sudo mv /sbin/ifconfig /sbin/ifconfig.disabled 2>/dev/null || true
-	@sudo ln -sf /bin/true /sbin/ifconfig 2>/dev/null || true
 
 	@echo "   - Starting pwngrid service..."
 	sudo systemctl daemon-reload
