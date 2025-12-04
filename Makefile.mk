@@ -125,12 +125,48 @@ setup-liblgpio:
 	fi;
 
 setup-nexmon:
-	@echo "--> Updating package lists and installing Nexmon DKMS drivers and firmware..."
+	@echo "--> Installing Nexmon DKMS and creating pure airmon-ng wlan0mon glue script..."
 	sudo apt-get update
-	# Using 'install' instead of 'full-upgrade' to speed up installation
 	sudo apt-get install -y brcmfmac-nexmon-dkms firmware-nexmon
-	@echo "✅ Nexmon driver package installation complete."
-	@echo "   Note: A reboot is still REQUIRED for the new kernel module to be loaded."
+
+	# nexutil is not required; airmon-ng works directly with the Nexmon DKMS driver.
+
+	# Create the definitive wlan0mon readiness script using pure airmon-ng
+	@echo '#!/bin/bash' | sudo tee /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '# Pure airmon-ng script to create a reliable wlan0mon for pwnagotchi' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo 'set -e' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo 'echo "=== Pure airmon-ng wlan0mon setup (Nexmon driver) ==="' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '# Kill interfering processes' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo 'airmon-ng check kill' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '# Standard airmon-ng flow - Nexmon driver supports this natively' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo 'sudo airmon-ng start wlan0' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo 'MON_IFACE="wlan0mon"' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '# Force UP (Nexmon driver quirk)' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo 'sudo ip link set $$MON_IFACE up 2>/dev/null || true' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo 'sudo ifconfig $$MON_IFACE up 2>/dev/null || true' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '# Verify (30s timeout)' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo 'for i in {1..30}; do' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '    if ip link show $$MON_IFACE 2>/dev/null | grep -qE "state (UP|UNKNOWN)"; then' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '        echo "✅ $$MON_IFACE UP and ready"' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '		touch /run/wlan0mon.ready' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '        iwconfig $$MON_IFACE  # Show monitor mode confirmation' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '		exit 0' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '    fi' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '    sleep 1' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo 'done' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo '' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo 'echo "❌ $$MON_IFACE failed"' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo 'ip link | grep wlan' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@echo 'exit 1' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	sudo chmod +x /usr/local/sbin/setup-wlan0mon.sh
+
+	@echo "✅ Nexmon + wlan0mon glue ready. Reboot required."
 
 setup-bettercap: install-deps
 	@echo "--> Installing Bettercap from APT repository..."
@@ -158,6 +194,12 @@ setup-bettercap: install-deps
 	@echo 'else' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
 	@echo '  /usr/bin/bettercap -no-colors -caplet pwnagotchi-manual -iface wlan0mon' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
 	@echo 'fi' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
+	# Patch pwnlib to use our nexmon glue
+	@echo '' | sudo tee -a /usr/bin/pwnlib > /dev/null
+	@echo 'start_monitor_interface() {' | sudo tee -a /usr/bin/pwnlib > /dev/null
+	@echo '    /usr/local/sbin/setup-wlan0mon.sh' | sudo tee -a /usr/bin/pwnlib > /dev/null
+	@echo '}' | sudo tee -a /usr/bin/pwnlib > /dev/null
+
 	sudo chmod +x /usr/bin/bettercap-launcher
 
 	@echo "[Unit]" | sudo tee /etc/systemd/system/bettercap.service > /dev/null
@@ -226,6 +268,10 @@ setup-pwngrid: setup-libpcap-compat
 	@echo "Environment=LD_PRELOAD=/usr/local/lib/libpcap.so.1" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "Environment=LD_LIBRARY_PATH=/usr/local/lib" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 	@echo "Type=simple" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
+	# Add wlan0mon readiness check BEFORE pwngrid starts
+	@echo "ExecStartPre=/usr/local/sbin/setup-wlan0mon.sh" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
+	@echo "ExecStartPre=/bin/bash -c 'while [ ! -f /run/wlan0mon.ready ]; do sleep 1; done'" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
+
 
 	# ---- THIS IS THE ONLY WORKING WRAPPER IN 2025 ----
 	@echo "   - Installing pwngrid wrapper (forces wlan0mon UP state)..."
@@ -306,8 +352,8 @@ setup-config:
 setup-service:
 	@echo "--> Creating pwnagotchi systemd service file..."
 	@echo "[Unit]" | sudo tee /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "Description=Pwnagotchi deep reinforcement learning" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "After=pwngrid-peer.service bettercap.service" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
+	@echo "Description=Pwnagotchi deep reinforcement learning" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null	
+	@echo "After=network-online.target pwngrid-peer.service bettercap.service" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
 	@echo "Wants=pwngrid-peer.service bettercap.service" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
 	@echo "" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
 	@echo "[Service]" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
