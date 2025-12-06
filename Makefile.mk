@@ -12,7 +12,7 @@ APP_USER     ?= $(shell whoami)
 
 # Directory Settings
 APP_DIR      ?= /opt/$(PROJECT_NAME)
-VENV_DIR     ?= /opt/pwnenv
+VENV_DIR     ?= $(APP_DIR)/venv
 CONFIG_DIR   ?= /etc/$(PROJECT_NAME)
 
 # Boot Configuration Paths
@@ -52,7 +52,7 @@ DEPS := git python3 python3-dev python3-venv python3-pip aircrack-ng libpcap-dev
 
 # Phony targets don't represent files.
 .PHONY: all install uninstall clean reinstall help \
-		install-deps setup-swap setup-liblgpio setup-libpcap-compat setup-nexmon setup-monitor-service setup-bettercap setup-pwngrid setup-pwnagotchi setup-pwnagotchi-launcher setup-config setup-service setup-boot-config \
+		install-deps setup-swap setup-liblgpio setup-libpcap-compat setup-nexmon setup-monitor-service setup-bettercap setup-pwngrid setup-pwnagotchi setup-plugin-dirs setup-pwnagotchi-launcher setup-config setup-service setup-boot-config \
 		uninstall-service uninstall-pwnagotchi restore-boot-config \
 		start stop restart status logs verify-nexmon
 
@@ -69,7 +69,7 @@ clean: ## Remove local build artifacts and __pycache__ directories.
 
 ##@ Installation
 
-install: install-deps setup-swap setup-liblgpio setup-libpcap-compat setup-nexmon setup-monitor-service setup-bettercap setup-pwngrid setup-pwnagotchi setup-pwnagotchi-launcher setup-config setup-service setup-boot-config ## Run the full installation process.
+install: install-deps setup-swap setup-liblgpio setup-libpcap-compat setup-nexmon setup-monitor-service setup-bettercap setup-pwngrid setup-pwnagotchi setup-plugin-dirs setup-pwnagotchi-launcher setup-config setup-service setup-boot-config ## Run the full installation process.
 	@echo "\nPwnagotchi installation complete."
 	@echo "   A reboot is required to load the new drivers and start the services."
 	@echo "   Run 'sudo reboot' to apply all changes."
@@ -197,7 +197,10 @@ setup-monitor-service:
 		'echo "Monitor mode stopped."' \
 		| sudo tee /usr/local/sbin/teardown-wlan0mon.sh > /dev/null
 	@sudo chmod +x /usr/local/sbin/teardown-wlan0mon.sh
-	@echo "monitor-mode.service installed and teardown script created."
+	@echo "--> Enabling and starting monitor-mode service..."
+	-sudo systemctl daemon-reload
+	-sudo systemctl enable --now monitor-mode.service
+	@echo "monitor-mode.service installed and started."
 
 setup-bettercap: install-deps
 	@echo "--> Installing Bettercap from APT repository..."
@@ -252,7 +255,10 @@ setup-bettercap: install-deps
 		'WantedBy=multi-user.target' \
 		| sudo tee /etc/systemd/system/bettercap.service > /dev/null
 	sudo /usr/bin/bettercap -eval "caplets.update; ui.update; quit"
-	@echo "Bettercap installation complete."
+	@echo "--> Enabling bettercap service..."
+	-sudo systemctl daemon-reload
+	-sudo systemctl enable --now bettercap.service
+	@echo "Bettercap installation and service setup complete."
 
 setup-libpcap-compat:
 	@echo "--> Compiling and installing libpcap 1.9.1 to fix RPi monitor mode bug in 1.10.x..."
@@ -362,17 +368,19 @@ setup-pwngrid: setup-libpcap-compat
 	@sudo rm -f /usr/local/share/fake-commands/ifconfig
 	@sudo rm -f /usr/local/bin/pwngrid-wrapper
 
-	@echo "   - Starting pwngrid service..."
+	@echo "   - Enabling and restarting pwngrid service..."
 	sudo systemctl daemon-reload
-	sudo systemctl enable pwngrid-peer.service
-	sudo systemctl restart pwngrid-peer.service
-
+	-sudo systemctl enable pwngrid-peer.service
+	-sudo systemctl restart pwngrid-peer.service
 	@echo "Pwngrid installation and service setup complete."
 
 setup-pwnagotchi: install-deps setup-liblgpio
 	@echo "--> Cloning Pwnagotchi repository to $(TMPDIR)/pwnagotchi..."
 	sudo rm -rf $(TMPDIR)/pwnagotchi
 	sudo git clone --branch $(PWNAGOTCHI_BRANCH) $(PWNAGOTCHI_REPO) $(TMPDIR)/pwnagotchi
+	@echo "--> Patching default.toml to use current user's home directory..."
+	@# Replace all instances of /home/pi with the dynamic APP_USER's home directory.
+	sudo sed -i 's|/home/pi|/home/$(APP_USER)|g' $(TMPDIR)/pwnagotchi/pwnagotchi/defaults.toml
 	@echo "--> Creating Python virtual environment at $(VENV_DIR)..."
 	sudo mkdir -p $(VENV_DIR)
 	sudo $(PYTHON_EXECUTABLE) -m venv $(VENV_DIR)
@@ -410,6 +418,29 @@ setup-pwnagotchi: install-deps setup-liblgpio
 	@echo "--> Cleaning up temporary source directory..."
 	cd /tmp && sudo rm -rf $(TMPDIR)/pwnagotchi
 	@echo "Pwnagotchi application setup complete."
+
+setup-plugin-dirs:
+	@echo "--> Creating custom plugin directories..."
+	sudo mkdir -p $(APP_DIR)/custom-plugins-local
+	sudo mkdir -p /usr/local/share/pwnagotchi/custom-plugins
+	sudo mkdir -p /usr/local/share/pwnagotchi/available-plugins
+	@echo "--> Populating plugin directories from local source folders (if they exist)..."
+	@if [ -d "custom-plugins" ]; then \
+		echo "    - Found 'custom-plugins' folder, copying contents..."; \
+		sudo rsync -a --delete custom-plugins/ /usr/local/share/pwnagotchi/custom-plugins/; \
+	fi
+	@if [ -d "available-plugins" ]; then \
+		echo "    - Found 'available-plugins' folder, copying contents..."; \
+		sudo rsync -a --delete available-plugins/ /usr/local/share/pwnagotchi/available-plugins/; \
+	fi
+	@if [ -d "custom-plugins-local" ]; then \
+		echo "    - Found 'custom-plugins-local' folder, copying contents..."; \
+		sudo rsync -a --delete custom-plugins-local/ $(APP_DIR)/custom-plugins-local/; \
+	fi
+	@echo "--> Setting ownership for plugin directories..."
+	sudo chown -R $(APP_USER):$(APP_USER) $(APP_DIR)/custom-plugins-local
+	sudo chown -R $(APP_USER):$(APP_USER) /usr/local/share/pwnagotchi
+	@echo "Plugin directories created."
 
 setup-config:
 	@echo "--> Creating initial configuration directory and file..."
@@ -464,11 +495,9 @@ setup-service:
 		'WantedBy=multi-user.target' \
 		| sudo tee /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
 
-	@echo "   - Enabling and starting pwnagotchi service..."
+	@echo "   - Enabling pwnagotchi service..."
 	sudo systemctl daemon-reload
 	sudo systemctl enable $(PROJECT_NAME).service
-	# Do not start service now, wait for final reboot
-	# sudo systemctl start $(PROJECT_NAME).service
 	@echo "Pwnagotchi service configuration complete."
 
 restore-boot-config:
@@ -558,9 +587,10 @@ uninstall-service:
 
 uninstall-pwnagotchi:
 	@echo "--> Removing Pwnagotchi application, environment, and configuration files..."
-	-sudo rm -rf $(APP_DIR)
 	-sudo rm -rf $(VENV_DIR)
 	-sudo rm -rf $(CONFIG_DIR)
+	-sudo rm -rf $(APP_DIR)/custom-plugins-local
+	-sudo rm -rf /usr/local/share/pwnagotchi
 	@echo "Uninstallation complete. (Note: Bettercap/Nexmon drivers must be manually uninstalled if no longer needed.)"
 
 ##@ Service Control
