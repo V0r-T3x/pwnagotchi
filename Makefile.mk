@@ -149,10 +149,15 @@ setup-nexmon:
 		'    echo "ERROR: Physical interface wlan0 did not appear after 30s."' \
 		'    exit 1' \
 		'fi' \
-		'if ip link show wlan0mon >/dev/null 2>&1 && ip link show wlan0mon | grep -qE "state (UP|UNKNOWN)"; then' \
-		'    echo "wlan0mon already exists and is UP/UNKNOWN -> ready"' \
-		'    touch /run/wlan0mon.ready 2>/dev/null || true' \
-		'    exit 0' \
+		'# Check if wlan0mon exists and is in a usable state (UP or UNKNOWN)' \
+		'if ip link show wlan0mon >/dev/null 2>&1; then' \
+		'    if ip link show wlan0mon | grep -q "state UP" || ip link show wlan0mon | grep -q "state UNKNOWN"; then' \
+		'        echo "wlan0mon already exists and is in a usable state (UP/UNKNOWN)."' \
+		'        touch /run/wlan0mon.ready 2>/dev/null || true' \
+		'        exit 0' \
+		'    else' \
+		'        echo "wlan0mon exists but is down. Attempting to recreate it."' \
+		'    fi' \
 		'fi' \
 		'echo "Cleaning old state..."' \
 		'sudo airmon-ng check kill >/dev/null 2>&1 || true' \
@@ -603,18 +608,6 @@ stop: ## Stop only the main pwnagotchi systemd service.
 restart: ## Restart only the main pwnagotchi systemd service.
 	sudo systemctl restart $(PROJECT_NAME).service
 
-start-all: ## Start all Pwnagotchi-related services in the correct order.
-	@echo "--> Starting all Pwnagotchi services..."
-	sudo systemctl start bettercap.service
-	sudo systemctl start pwngrid-peer.service
-	sudo systemctl start $(PROJECT_NAME).service
-
-stop-all: ## Stop all Pwnagotchi-related services.
-	@echo "--> Stopping all Pwnagotchi services..."
-	-sudo systemctl stop $(PROJECT_NAME).service
-	-sudo systemctl stop pwngrid-peer.service
-	-sudo systemctl stop bettercap.service
-
 status: ## Check the status of all Pwnagotchi-related services.
 	@echo "--- Pwnagotchi Service Status ---"
 	sudo systemctl status $(PROJECT_NAME).service || echo "Pwnagotchi service not found/active."
@@ -627,6 +620,16 @@ status: ## Check the status of all Pwnagotchi-related services.
 
 logs: ## Tail the logs for the pwnagotchi service.
 	sudo journalctl -u $(PROJECT_NAME).service -f
+
+all-logs: ## Tail the logs for all Pwnagotchi-related services.
+	@echo "--- Pwnagotchi Logs ---"
+	sudo journalctl -u $(PROJECT_NAME).service -f &
+	@echo "\n--- Pwngrid Logs ---"
+	sudo journalctl -u pwngrid-peer.service -f &
+	@echo "\n--- Bettercap Logs ---"
+	sudo journalctl -u bettercap.service -f &
+	@echo "\n--- Monitor Mode Service Logs ---"
+	sudo journalctl -u monitor-mode.service -f &
 
 ##@ Verification
 
