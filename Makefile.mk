@@ -621,15 +621,26 @@ status: ## Check the status of all Pwnagotchi-related services.
 logs: ## Tail the logs for the pwnagotchi service.
 	sudo journalctl -u $(PROJECT_NAME).service -f
 
-all-logs: ## Tail the logs for all Pwnagotchi-related services.
-	@echo "--- Pwnagotchi Logs ---"
-	sudo journalctl -u $(PROJECT_NAME).service -f &
-	@echo "\n--- Pwngrid Logs ---"
-	sudo journalctl -u pwngrid-peer.service -f &
-	@echo "\n--- Bettercap Logs ---"
-	sudo journalctl -u bettercap.service -f &
-	@echo "\n--- Monitor Mode Service Logs ---"
-	sudo journalctl -u monitor-mode.service -f &
+all-logs: ## Tail the journalctl logs for all Pwnagotchi-related services.
+	@echo "Tailing service logs. For more detailed hardware and system logs, run 'make all-logs-verbose'."
+	sudo journalctl -u $(PROJECT_NAME).service -u pwngrid-peer.service -u bettercap.service -u monitor-mode.service -f
+
+all-logs-verbose: ## Tail all service, kernel, and hardware logs for deep debugging.
+	@echo "--- Starting verbose logging stream. Press Ctrl+C to stop. ---"
+	@/bin/bash -c ' \
+		prefix() { \
+			while read -r line; do echo "[$1] $$line"; done; \
+		}; \
+		export -f prefix; \
+		sudo journalctl -u $(PROJECT_NAME).service -f | /bin/bash -c "prefix pwnagotchi" & \
+		sudo journalctl -u pwngrid-peer.service -f | /bin/bash -c "prefix pwngrid" & \
+		sudo journalctl -u bettercap.service -f | /bin/bash -c "prefix bettercap" & \
+		sudo journalctl -u monitor-mode.service -f | /bin/bash -c "prefix monitor" & \
+		sudo dmesg --follow | grep --line-buffered brcmfmac | /bin/bash -c "prefix dmesg" & \
+		sudo tail -f /var/log/pwnagotchi.log /var/log/syslog | grep --line-buffered -i "blind|channel|brcmf|recon" | /bin/bash -c "prefix syslog" & \
+		(while true; do sudo iw dev wlan0mon info 2>/dev/null | grep channel; sleep 5; done) | /bin/bash -c "prefix iw-channel" & \
+		(while true; do sudo cat /proc/net/dev 2>/dev/null | grep wlan0mon; sleep 1; done) | /bin/bash -c "prefix net-dev" & \
+		wait'
 
 ##@ Verification
 
