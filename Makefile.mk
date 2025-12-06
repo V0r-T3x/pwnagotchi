@@ -12,9 +12,13 @@ APP_USER     ?= $(shell whoami)
 
 # Directory Settings
 APP_DIR      ?= /opt/$(PROJECT_NAME)
-VENV_DIR     ?= $(APP_DIR)/venv
+VENV_DIR     ?= /opt/pwnenv
 CONFIG_DIR   ?= /etc/$(PROJECT_NAME)
 
+# Boot Configuration Paths
+BOOT_FIRMWARE_DIR ?= /boot/firmware
+CONFIG_TXT ?= $(BOOT_FIRMWARE_DIR)/config.txt
+CMDLINE_TXT ?= $(BOOT_FIRMWARE_DIR)/cmdline.txt
 # Environment Settings
 # Default Temporary Directory
 TMPDIR ?= /var/tmp
@@ -41,15 +45,15 @@ PWNGRID_VERSION ?= 1.10.3
  
 # System dependencies for Pwnagotchi on Kali Linux, now including the 'bettercap' package from APT.
 # Build-essentials are no longer needed for bettercap but kept for general compatibility.
-DEPS := git python3 python3-dev python3-venv python3-pip aircrack-ng libpcap-dev bettercap bettercap-caplets unzip ninja-build libglib2.0-dev libdbus-1-dev libjpeg-dev zlib1g-dev libpng-dev libfreetype-dev build-essential python3-dev libyaml-dev libssl-dev libffi-dev i2c-tools swig gpiod libgpiod-dev libgpiod-doc libcap-dev golang
+DEPS := git python3 python3-dev python3-venv python3-pip aircrack-ng libpcap-dev bettercap bettercap-caplets unzip ninja-build libglib2.0-dev libdbus-1-dev libjpeg-dev zlib1g-dev libpng-dev libfreetype-dev build-essential python3-dev libyaml-dev libssl-dev libffi-dev i2c-tools swig gpiod libgpiod-dev libgpiod-doc libcap-dev libopenblas-dev
 
 # Use .DEFAULT_GOAL to make `help` the default action.
 .DEFAULT_GOAL := help
 
 # Phony targets don't represent files.
 .PHONY: all install uninstall clean reinstall help \
-		install-deps setup-swap setup-liblgpio setup-libpcap-compat setup-nexmon setup-bettercap setup-pwngrid setup-pwnagotchi setup-config setup-service \
-		uninstall-service uninstall-pwnagotchi \
+		install-deps setup-swap setup-liblgpio setup-libpcap-compat setup-nexmon setup-monitor-service setup-bettercap setup-pwngrid setup-pwnagotchi setup-pwnagotchi-launcher setup-config setup-service setup-boot-config \
+		uninstall-service uninstall-pwnagotchi restore-boot-config \
 		start stop restart status logs verify-nexmon
 
 ##@ General
@@ -58,15 +62,15 @@ all: install ## Install Pwnagotchi and all its dependencies.
 reinstall: uninstall install ## Uninstall and then reinstall Pwnagotchi.
 clean: ## Remove local build artifacts and __pycache__ directories.
 	@echo "Cleaning up local build artifacts..."
-	-sudo rm -rf $(PWNGRID_INSTALL_DIR)
+	-sudo rm -rf /tmp/pwngrid /tmp/gopacket-patched
 	find . -type f -name "*.pyc" -delete
 	find . -type d -name "__pycache__" -delete
 	rm -rf .venv build dist *.egg-info
 
 ##@ Installation
 
-install: install-deps setup-swap setup-liblgpio setup-libpcap-compat setup-nexmon setup-bettercap setup-pwngrid setup-pwnagotchi setup-config setup-service ## Run the full installation process.
-	@echo "\n✅ Pwnagotchi installation complete."
+install: install-deps setup-swap setup-liblgpio setup-libpcap-compat setup-nexmon setup-monitor-service setup-bettercap setup-pwngrid setup-pwnagotchi setup-pwnagotchi-launcher setup-config setup-service setup-boot-config ## Run the full installation process.
+	@echo "\nPwnagotchi installation complete."
 	@echo "   A reboot is required to load the new drivers and start the services."
 	@echo "   Run 'sudo reboot' to apply all changes."
 	@echo "   After reboot, run 'make status' to check all service statuses."
@@ -104,7 +108,7 @@ setup-swap:
 		sudo mkswap $$SWAP_FILE && \
 		sudo swapon $$SWAP_FILE && \
 		echo "$$SWAP_FILE none swap sw 0 0" | sudo tee -a /etc/fstab && \
-		echo "✅ Swap file created and enabled."; \
+		echo "Swap file created and enabled."; \
 	fi;
 
 setup-liblgpio:
@@ -121,102 +125,134 @@ setup-liblgpio:
 		sudo make install && \
 		sudo ldconfig && \
 		cd / && sudo rm -rf /tmp/lg-master /tmp/lg-master.zip && \
-		echo "✅ liblgpio C library installed successfully."; \
+		echo "liblgpio C library installed successfully."; \
 	fi;
 
 setup-nexmon:
-	@echo "--> Installing Nexmon DKMS and creating pure airmon-ng wlan0mon glue script..."
+	@echo "--> Installing Nexmon DKMS and creating FIXED wlan0mon glue script..."
 	sudo apt-get update
 	sudo apt-get install -y brcmfmac-nexmon-dkms firmware-nexmon
-
-	# nexutil is not required; airmon-ng works directly with the Nexmon DKMS driver.
-
-	# Create the definitive wlan0mon readiness script using pure airmon-ng
-	@echo '#!/bin/bash' | sudo tee /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '# Pure airmon-ng script to create a reliable wlan0mon for pwnagotchi' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo 'set -e' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo 'echo "=== Pure airmon-ng wlan0mon setup (Nexmon driver) ==="' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '# Kill interfering processes' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo 'airmon-ng check kill' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '# Standard airmon-ng flow - Nexmon driver supports this natively' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo 'sudo airmon-ng start wlan0' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo 'MON_IFACE="wlan0mon"' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '# Force UP (Nexmon driver quirk)' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo 'sudo ip link set $$MON_IFACE up 2>/dev/null || true' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo 'sudo ifconfig $$MON_IFACE up 2>/dev/null || true' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '# Verify (30s timeout)' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo 'for i in {1..30}; do' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '    if ip link show $$MON_IFACE 2>/dev/null | grep -qE "state (UP|UNKNOWN)"; then' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '        echo "✅ $$MON_IFACE UP and ready"' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '		touch /run/wlan0mon.ready' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '        iwconfig $$MON_IFACE  # Show monitor mode confirmation' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '		exit 0' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '    fi' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '    sleep 1' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo 'done' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo '' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo 'echo "❌ $$MON_IFACE failed"' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo 'ip link | grep wlan' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
-	@echo 'exit 1' | sudo tee -a /usr/local/sbin/setup-wlan0mon.sh > /dev/null
+	@printf '%s\n' \
+		'#!/bin/bash' \
+		'set -e' \
+		'echo "=== Setting up wlan0mon (Kali/Nexmon 2025 - FINAL & WORKING) ==="' \
+		'if ip link show wlan0mon >/dev/null 2>&1 && ip link show wlan0mon | grep -qE "state (UP|UNKNOWN)"; then' \
+		'    echo "wlan0mon already exists and is UP/UNKNOWN -> ready"' \
+		'    touch /run/wlan0mon.ready 2>/dev/null || true' \
+		'    exit 0' \
+		'fi' \
+		'echo "Cleaning old state..."' \
+		'airmon-ng check kill >/dev/null 2>&1 || true' \
+		'ip link delete wlan0mon 2>/dev/null || true' \
+		'echo "Creating fresh monitor interface..."' \
+		'airmon-ng start wlan0 >/dev/null 2>&1 || true' \
+		'iw dev wlan0mon set type monitor 2>/dev/null || true' \
+		'ip link set dev wlan0mon up 2>/dev/null || true' \
+		'for i in {1..15}; do' \
+		'    STATE=$(ip link show wlan0mon 2>/dev/null | grep -o "state [A-Z]*" || echo "")' \
+		'    if [ "$$STATE" = "state UP" ] || [ "$$STATE" = "state UNKNOWN" ]; then' \
+		'        echo "wlan0mon is UP and ready"' \
+		'        touch /run/wlan0mon.ready' \
+		'        exit 0' \
+		'    fi' \
+		'    sleep 1' \
+		'done' \
+		'echo "ERROR: wlan0mon failed after 15s"' \
+		'exit 1' \
+		| sudo tee /usr/local/sbin/setup-wlan0mon.sh > /dev/null
 	sudo chmod +x /usr/local/sbin/setup-wlan0mon.sh
+	@echo "Fixed Nexmon glue script installed."
 
-	@echo "✅ Nexmon + wlan0mon glue ready. Reboot required."
+setup-monitor-service:
+	@echo "--> Installing dedicated monitor-mode.service (2025 Kali/Nexmon standard)"
+	@printf '%s\n' \
+		'[Unit]' \
+		'Description=Pwnagotchi Monitor Mode Manager (wlan0mon)' \
+		'After=network.target' \
+		'Wants=network.target' \
+		'Before=pwngrid-peer.service bettercap.service pwnagotchi.service' \
+		'' \
+		'[Service]' \
+		'Type=oneshot' \
+		'RemainAfterExit=yes' \
+		'TimeoutStartSec=90' \
+		'ExecStart=/usr/local/sbin/setup-wlan0mon.sh' \
+		'Restart=on-failure' \
+		'RestartSec=5' \
+		'ExecStop=/usr/local/sbin/teardown-wlan0mon.sh' \
+		'' \
+		'[Install]' \
+		'WantedBy=multi-user.target' \
+		| sudo tee /etc/systemd/system/monitor-mode.service > /dev/null
+	@printf '%s\n' \
+		'#!/bin/bash' \
+		'set -e' \
+		'echo "Stopping monitor mode..."' \
+		'if ip link show wlan0mon >/dev/null 2>&1; then' \
+		'    echo "Removing wlan0mon..."' \
+		'    sudo airmon-ng stop wlan0mon >/dev/null 2>&1 || true' \
+		'    sudo ip link delete wlan0mon 2>/dev/null || true' \
+		'fi' \
+		'rm -f /run/wlan0mon.ready' \
+		'echo "Monitor mode stopped."' \
+		| sudo tee /usr/local/sbin/teardown-wlan0mon.sh > /dev/null
+	@sudo chmod +x /usr/local/sbin/teardown-wlan0mon.sh
+	@echo "monitor-mode.service installed and teardown script created."
 
 setup-bettercap: install-deps
 	@echo "--> Installing Bettercap from APT repository..."
 	# This relies on the 'bettercap' package being in the DEPS list.
 	# The install-deps target handles the installation.
-	@echo "--> Updating Bettercap caplets and UI..."
-	@echo "   - Installing caplets and web UI..."
-	@echo "--> Creating bettercap-launcher script..."
-	@echo '#!/usr/bin/env bash' | sudo tee /usr/bin/bettercap-launcher > /dev/null
-	@echo 'source /usr/bin/pwnlib' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo '' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo '# we need to decrypt something' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo 'if is_crypted_mode; then' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo '  while ! is_decrypted; do' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo '    echo "Waiting for decryption..."' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo '    sleep 1' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo '  done' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo 'fi' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo '' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo 'reload_brcm' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo 'start_monitor_interface' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo '' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo 'if is_auto_mode_no_delete; then' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo '  /usr/bin/bettercap -no-colors -caplet pwnagotchi-auto -iface wlan0mon' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo 'else' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo '  /usr/bin/bettercap -no-colors -caplet pwnagotchi-manual -iface wlan0mon' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	@echo 'fi' | sudo tee -a /usr/bin/bettercap-launcher > /dev/null
-	# Patch pwnlib to use our nexmon glue
-	@echo '' | sudo tee -a /usr/bin/pwnlib > /dev/null
-	@echo 'start_monitor_interface() {' | sudo tee -a /usr/bin/pwnlib > /dev/null
-	@echo '    /usr/local/sbin/setup-wlan0mon.sh' | sudo tee -a /usr/bin/pwnlib > /dev/null
-	@echo '}' | sudo tee -a /usr/bin/pwnlib > /dev/null
-
+	@echo "--> Creating a streamlined bettercap-launcher (pwnlib dependency removed)..."
+	@printf '%s\n' \
+		'#!/usr/bin/env bash' \
+		'' \
+		'# Simple, direct mode detection without pwnlib.' \
+		'# The monitor interface (wlan0mon) is now created by the pwngrid-peer.service.' \
+		'MODE="auto"' \
+		'if [ -f /root/.pwnagotchi-manual ]; then' \
+		'  MODE="manual"' \
+		'elif [ -f /root/.pwnagotchi-auto ]; then' \
+		'  MODE="auto"' \
+		'# Fallback logic: if USB is connected, assume manual mode for interaction.' \
+		'elif ip link show usb0 2>/dev/null | grep -q "state UP"; then' \
+		'  MODE="manual"' \
+		'else' \
+		'  # Default to auto mode if no other indicators are found.' \
+		'  MODE="auto"' \
+		'fi' \
+		'' \
+		'echo "Starting bettercap in $${MODE} mode..."' \
+		'exec /usr/bin/bettercap -no-colors -caplet "pwnagotchi-$${MODE}" -iface wlan0mon' \
+		| sudo tee /usr/bin/bettercap-launcher > /dev/null
 	sudo chmod +x /usr/bin/bettercap-launcher
-
-	@echo "[Unit]" | sudo tee /etc/systemd/system/bettercap.service > /dev/null
-	@echo "Description=bettercap with pwnagotchi caplet" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
-	@echo "Documentation=https://bettercap.org" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
-	@echo "Wants=network.target" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
-	@echo "" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
-	@echo "[Service]" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
-	@echo "Type=simple" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
-	@echo "ExecStart=/usr/bin/bettercap-launcher" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
-	@echo "Restart=always" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
-	@echo "RestartSec=30" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
-	@echo "" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
-	@echo "[Install]" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
-	@echo "WantedBy=multi-user.target" | sudo tee -a /etc/systemd/system/bettercap.service > /dev/null
+	@echo "--> Creating wait script for bettercap service..."
+	@printf '%s\n' \
+		'#!/bin/bash' \
+		'# This script waits for the wlan0mon interface to be ready.' \
+		'while [ ! -f /run/wlan0mon.ready ]; do' \
+		'    echo "[bettercap] waiting for wlan0mon to be ready..."' \
+		'    sleep 1' \
+		'done' \
+		| sudo tee /usr/local/sbin/wait-for-wlan0mon.sh > /dev/null
+	sudo chmod +x /usr/local/sbin/wait-for-wlan0mon.sh
+	@printf '%s\n' \
+		'[Unit]' \
+		'Description=Bettercap service for Pwnagotchi' \
+		'After=network-online.target monitor-mode.service' \
+		'Requires=monitor-mode.service' \
+		'' \
+		'[Service]' \
+		'Type=simple' \
+		'ExecStart=/usr/bin/bettercap-launcher' \
+		'Restart=always' \
+		'RestartSec=30' \
+		'' \
+		'[Install]' \
+		'WantedBy=multi-user.target' \
+		| sudo tee /etc/systemd/system/bettercap.service > /dev/null
 	sudo /usr/bin/bettercap -eval "caplets.update; ui.update; quit"
-	@echo "✅ Bettercap installation complete."
+	@echo "Bettercap installation complete."
 
 setup-libpcap-compat:
 	@echo "--> Compiling and installing libpcap 1.9.1 to fix RPi monitor mode bug in 1.10.x..."
@@ -231,11 +267,10 @@ setup-libpcap-compat:
 		sudo ln -sf /usr/local/lib/libpcap.so.1.9.1 /usr/local/lib/libpcap.so.1 && \
 		sudo ldconfig && \
 		cd / && sudo rm -rf /tmp/libpcap-1.9.1 /tmp/libpcap-1.9.1.tar.gz && \
-		echo "✅ libpcap 1.9.1 installed successfully."; \
+		echo "libpcap 1.9.1 installed successfully."; \
 	else \
 		echo "    libpcap 1.9.1 already installed. Skipping."; \
 	fi;
-
 setup-pwngrid: setup-libpcap-compat
 	@echo "--> Compiling Pwngrid from source to ensure compatibility..."
 	@# This is the definitive fix for SIGSEGV errors on specific ARM/Kali combinations.
@@ -255,24 +290,26 @@ setup-pwngrid: setup-libpcap-compat
 	cd /tmp && rm -rf pwngrid && git clone https://github.com/jayofelony/pwngrid.git
 
 	@echo "   - [3/4] Creating patched go.mod with local replace directive..."
-	@echo 'module github.com/jayofelony/pwngrid' | sudo tee /tmp/pwngrid/go.mod > /dev/null
-	@echo '' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo 'go 1.22' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo '' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo 'require (' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo '	github.com/biezhi/gorm-paginator/pagination v0.0.0-20190124091837-7a5c8ed20334' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo '	github.com/evilsocket/islazy v1.11.0' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo '	github.com/go-chi/chi/v5 v5.1.0' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo '	github.com/go-chi/cors v1.2.1' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo '	github.com/golang-jwt/jwt/v5 v5.2.1' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo '	github.com/gopacket/gopacket v1.2.0' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo '	github.com/jinzhu/gorm v1.9.16' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo '	github.com/joho/godotenv v1.5.1' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo ')' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo '' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo 'require golang.org/x/sys v0.22.0 // indirect' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo '' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
-	@echo 'replace github.com/gopacket/gopacket => /tmp/gopacket-patched' | sudo tee -a /tmp/pwngrid/go.mod > /dev/null
+	@printf '%s\n' \
+		'module github.com/jayofelony/pwngrid' \
+		'' \
+		'go 1.22' \
+		'' \
+		'require (' \
+		'	github.com/biezhi/gorm-paginator/pagination v0.0.0-20190124091837-7a5c8ed20334' \
+		'	github.com/evilsocket/islazy v1.11.0' \
+		'	github.com/go-chi/chi/v5 v5.1.0' \
+		'	github.com/go-chi/cors v1.2.1' \
+		'	github.com/golang-jwt/jwt/v5 v5.2.1' \
+		'	github.com/gopacket/gopacket v1.2.0' \
+		'	github.com/jinzhu/gorm v1.9.16' \
+		'	github.com/joho/godotenv v1.5.1' \
+		')' \
+		'' \
+		'require golang.org/x/sys v0.22.0 // indirect' \
+		'' \
+		'replace github.com/gopacket/gopacket => /tmp/gopacket-patched' \
+		| sudo tee /tmp/pwngrid/go.mod > /dev/null
 
 	@echo "   - [4/4] Building binary from patched source..."
 	cd /tmp/pwngrid && go mod tidy
@@ -294,43 +331,36 @@ setup-pwngrid: setup-libpcap-compat
 	sudo chown root:root /var/log/pwngrid-peer.log
 	sudo chmod 640 /var/log/pwngrid-peer.log
 
-	@echo "[Unit]" | sudo tee /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "Description=pwngrid peer service" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "Documentation=https://pwnagotchi.org" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "Wants=network.target" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	# Wait for the network to be fully online and bind to the wlan0 device itself.
-	@echo "After=network-online.target" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "BindsTo=sys-subsystem-net-devices-wlan0.device" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "[Service]" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "Environment=LD_PRELOAD=/usr/local/lib/libpcap.so.1" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "Environment=LD_LIBRARY_PATH=/usr/local/lib" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "Type=simple" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	# Create a fake ifconfig to prevent pwngrid from interfering with the monitor interface.
-	# Prepending a custom bin directory to the PATH is safer than replacing system binaries.
 	@echo "   - Neutralizing ifconfig for pwngrid service..."
 	@sudo mkdir -p /usr/local/share/fake-commands
-	@echo '#!/bin/sh' | sudo tee /usr/local/share/fake-commands/ifconfig > /dev/null
-	@echo 'exit 0' | sudo tee -a /usr/local/share/fake-commands/ifconfig > /dev/null
+	@printf '%s\n' \
+		'#!/bin/sh' \
+		'exit 0' \
+		| sudo tee /usr/local/share/fake-commands/ifconfig > /dev/null
 	@sudo chmod +x /usr/local/share/fake-commands/ifconfig
-	@echo "Environment='PATH=/usr/local/share/fake-commands:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 
-	# Add wlan0mon readiness check BEFORE pwngrid starts
-	@echo "ExecStartPre=/usr/local/sbin/setup-wlan0mon.sh" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "ExecStartPre=/bin/bash -c 'while [ ! -f /run/wlan0mon.ready ]; do sleep 1; done'" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
+	@printf '%s\n' \
+		'[Unit]' \
+		'Description=pwngrid peer service' \
+		'After=network-online.target monitor-mode.service' \
+		'Requires=monitor-mode.service' \
+		'' \
+		'[Service]' \
+		'Environment=LD_PRELOAD=/usr/local/lib/libpcap.so.1' \
+		'Environment=LD_LIBRARY_PATH=/usr/local/lib' \
+		'Type=simple' \
+		'ExecStart=/usr/local/bin/pwngrid -keys /etc/pwnagotchi -peers /root/peers -address 127.0.0.1:8666 -client-token /root/.api-enrollment.json -wait -iface wlan0mon -log /var/log/pwngrid-peer.log' \
+		'Restart=always' \
+		'RestartSec=30' \
+		'' \
+		'[Install]' \
+		'WantedBy=multi-user.target' \
+		| sudo tee /etc/systemd/system/pwngrid-peer.service > /dev/null
 
-
-	# The wrapper is no longer needed due to the robust setup-wlan0mon.sh and readiness check.
-	# Calling pwngrid directly is now more stable.
 	@echo "   - Removing obsolete pwngrid-wrapper..."
+	@sudo rm -f /usr/local/sbin/wait-for-wlan0mon.sh
+	@sudo rm -f /usr/local/share/fake-commands/ifconfig
 	@sudo rm -f /usr/local/bin/pwngrid-wrapper
-	@echo "ExecStart=/usr/local/bin/pwngrid -keys /etc/pwnagotchi -peers /root/peers -address 127.0.0.1:8666 -client-token /root/.api-enrollment.json -wait -iface wlan0mon -log /var/log/pwngrid-peer.log" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-
-	@echo "Restart=always" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "RestartSec=30" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "[Install]" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
-	@echo "WantedBy=multi-user.target" | sudo tee -a /etc/systemd/system/pwngrid-peer.service > /dev/null
 
 	@echo "   - Starting pwngrid service..."
 	sudo systemctl daemon-reload
@@ -338,84 +368,175 @@ setup-pwngrid: setup-libpcap-compat
 	sudo systemctl restart pwngrid-peer.service
 
 	@echo "Pwngrid installation and service setup complete."
-	
+
 setup-pwnagotchi: install-deps setup-liblgpio
-	@echo "--> Creating application directory at $(APP_DIR)..."
-	sudo mkdir -p $(APP_DIR)
-	@echo "--> Cloning Pwnagotchi repository from $(PWNAGOTCHI_REPO)..."
-	sudo git clone --branch $(PWNAGOTCHI_BRANCH) $(PWNAGOTCHI_REPO) $(APP_DIR)
+	@echo "--> Cloning Pwnagotchi repository to $(TMPDIR)/pwnagotchi..."
+	sudo rm -rf $(TMPDIR)/pwnagotchi
+	sudo git clone --branch $(PWNAGOTCHI_BRANCH) $(PWNAGOTCHI_REPO) $(TMPDIR)/pwnagotchi
 	@echo "--> Creating Python virtual environment at $(VENV_DIR)..."
+	sudo mkdir -p $(VENV_DIR)
 	sudo $(PYTHON_EXECUTABLE) -m venv $(VENV_DIR)
 	@echo "--> Installing Pwnagotchi Python dependencies..."
 	@# Upgrade pip first.
 	sudo $(VENV_DIR)/bin/pip install --upgrade pip setuptools wheel
-	@echo "--> Pre-installing NumPy wheel to avoid compilation on RPi..."
+	@echo "--> Pre-installing wheels to avoid compilation on RPi..."
 	@# Detect architecture to download the correct wheel. armv7l is 32-bit, aarch64 is 64-bit.
 	@# This avoids memory/CPU exhaustion from compiling NumPy from source.
 	@UNAME_M=$(shell uname -m); \
 	if [ "$$UNAME_M" = "armv7l" ]; then \
-		echo "--> Pre-installing wheels for armv7l to avoid compilation..."; \
+		echo "    Pre-installing wheels for armv7l..."; \
 		WHEELS_TO_INSTALL="numpy/numpy-2.3.5-cp313-cp313-linux_armv7l.whl pillow/pillow-11.3.0-cp313-cp313-linux_armv7l.whl cryptography/cryptography-45.0.7-cp313-abi3-linux_armv7l.whl spidev/spidev-3.5-cp313-cp313-linux_armv7l.whl"; \
 		for wheel_path in $$WHEELS_TO_INSTALL; do \
 			WHEEL_FILE=$$(basename $$wheel_path); \
 			PACKAGE_NAME=$$(dirname $$wheel_path); \
 			WHEEL_URL="https://www.piwheels.org/simple/$$PACKAGE_NAME/$$WHEEL_FILE"; \
 			echo "    Downloading $$WHEEL_FILE..."; \
-			if sudo wget -q $$WHEEL_URL -O "/tmp/$$WHEEL_FILE"; then \
-				sudo $(VENV_DIR)/bin/pip install "/tmp/$$WHEEL_FILE"; \
-				sudo rm "/tmp/$$WHEEL_FILE"; \
+			if sudo wget -q $$WHEEL_URL -O "$(TMPDIR)/$$WHEEL_FILE"; then \
+				sudo $(VENV_DIR)/bin/pip install "$(TMPDIR)/$$WHEEL_FILE"; \
+				sudo rm "$(TMPDIR)/$$WHEEL_FILE"; \
 			else \
-				echo "⚠️  Could not download $$WHEEL_FILE. Pip will try to build from source."; \
+				echo "Could not download $$WHEEL_FILE. Pip will try to build from source."; \
 			fi; \
 		done; \
 	else \
-		echo "    Architecture is not armv7l ($$UNAME_M), installing NumPy via standard pip."; \
+		echo "    Architecture is not armv7l ($$UNAME_M), installing dependencies via standard pip."; \
 		sudo $(VENV_DIR)/bin/pip install numpy; \
 	fi
-	@# Install the pwnagotchi project in editable mode.
-	@# This will read dependencies from pyproject.toml and install them.
-	sudo MAKEFLAGS='-j1' TMPDIR=$(TMPDIR) -H $(VENV_DIR)/bin/pip install --editable $(APP_DIR)
-	@echo "--> Setting ownership for application directory..."
-	sudo chown -R $(APP_USER):$(APP_USER) $(APP_DIR)
-	@echo "✅ Pwnagotchi application setup complete."
+
+	@echo "--> Installing Pwnagotchi and its dependencies from the cloned repo..."
+	sudo $(VENV_DIR)/bin/pip install $(TMPDIR)/pwnagotchi
+	@echo "--> Setting ownership for virtual environment directory..."
+	sudo chown -R $(APP_USER):$(APP_USER) $(VENV_DIR)
+	@echo "--> Cleaning up temporary source directory..."
+	cd /tmp && sudo rm -rf $(TMPDIR)/pwnagotchi
+	@echo "Pwnagotchi application setup complete."
 
 setup-config:
 	@echo "--> Creating initial configuration directory and file..."
 	sudo mkdir -p $(CONFIG_DIR)
 	# This creates a blank config file to be edited by the user later
 	sudo touch $(CONFIG_DIR)/$(CONFIG_FILE)
-	@echo "✅ Configuration file $(CONFIG_DIR)/$(CONFIG_FILE) created."
+	@echo "Configuration file $(CONFIG_DIR)/$(CONFIG_FILE) created."
+
+setup-pwnagotchi-launcher:
+	@echo "--> Creating pwnagotchi-launcher that respects /root/.pwnagotchi-* files..."
+	@printf '%s\n' \
+		'#!/usr/bin/env bash' \
+		'MODE="auto"' \
+		'# Check for mode files and then remove them to prepare for the next command.' \
+		'if [ -f /root/.pwnagotchi-manual ]; then' \
+		'  MODE="manual"' \
+		'  rm -f /root/.pwnagotchi-manual /root/.pwnagotchi-auto' \
+		'elif [ -f /root/.pwnagotchi-auto ]; then' \
+		'  MODE="auto"' \
+		'  rm -f /root/.pwnagotchi-manual /root/.pwnagotchi-auto' \
+		'# Fallback logic: if USB is connected, assume manual mode for interaction.' \
+		'elif ip link show usb0 2>/dev/null | grep -q "state UP"; then' \
+		'  MODE="manual"' \
+		'fi' \
+		'echo "Starting pwnagotchi in $${MODE} mode..."' \
+		'if [ "$${MODE}" = "manual" ]; then' \
+		'  exec $(VENV_DIR)/bin/python3 $(VENV_DIR)/bin/pwnagotchi --manual' \
+		'else' \
+		'  exec $(VENV_DIR)/bin/python3 $(VENV_DIR)/bin/pwnagotchi' \
+		'fi' | sudo tee /usr/bin/pwnagotchi-launcher >/dev/null
+	@sudo chmod +x /usr/bin/pwnagotchi-launcher
+	@echo "pwnagotchi-launcher created."
 
 setup-service:
 	@echo "--> Creating pwnagotchi systemd service file..."
-	@echo "[Unit]" | sudo tee /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "Description=Pwnagotchi deep reinforcement learning" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null	
-	@echo "After=network-online.target pwngrid-peer.service bettercap.service" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "Wants=pwngrid-peer.service bettercap.service" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "[Service]" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "# Pwnagotchi must be run as root to access wifi/bettercap" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "User=root" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "Group=root" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "Type=simple" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "# ExecStart is a Python script wrapper that calls the main Pwnagotchi executable" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "ExecStart=sudo $(VENV_DIR)/bin/python3 $(VENV_DIR)/bin/pwnagotchi" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "Restart=always" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "RestartSec=30" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "[Install]" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
-	@echo "WantedBy=multi-user.target" | sudo tee -a /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
+	@printf '%s\n' \
+		'[Unit]' \
+		'Description=Pwnagotchi deep reinforcement learning' \
+		'After=network-online.target pwngrid-peer.service bettercap.service monitor-mode.service' \
+		'Wants=pwngrid-peer.service bettercap.service monitor-mode.service' \
+		'' \
+		'[Service]' \
+		'# Pwnagotchi must be run as root to access wifi/bettercap' \
+		'User=root' \
+		'Group=root' \
+		'Type=simple' \
+		'ExecStart=/usr/bin/pwnagotchi-launcher' \
+		'Restart=always' \
+		'RestartSec=30' \
+		'' \
+		'[Install]' \
+		'WantedBy=multi-user.target' \
+		| sudo tee /etc/systemd/system/$(PROJECT_NAME).service > /dev/null
 
 	@echo "   - Enabling and starting pwnagotchi service..."
 	sudo systemctl daemon-reload
 	sudo systemctl enable $(PROJECT_NAME).service
 	# Do not start service now, wait for final reboot
 	# sudo systemctl start $(PROJECT_NAME).service
-	@echo "✅ Pwnagotchi service configuration complete."
+	@echo "Pwnagotchi service configuration complete."
+
+restore-boot-config:
+	@echo "--> Restoring original boot configuration files from backup..."
+	@if [ -f "$(CONFIG_TXT).bak" ]; then \
+		echo "    - Restoring $(CONFIG_TXT) from backup..."; \
+		sudo mv -f $(CONFIG_TXT).bak $(CONFIG_TXT); \
+	else \
+		echo "    - No backup found for $(CONFIG_TXT). Skipping."; \
+	fi
+	@if [ -f "$(CMDLINE_TXT).bak" ]; then \
+		echo "    - Restoring $(CMDLINE_TXT) from backup..."; \
+		sudo mv -f $(CMDLINE_TXT).bak $(CMDLINE_TXT); \
+	else \
+		echo "    - No backup found for $(CMDLINE_TXT). Skipping."; \
+	fi
+	@echo "Boot file restoration complete. A reboot is recommended."
+
+setup-boot-config:
+	@echo "--> Configuring /boot/firmware/config.txt and cmdline.txt for Pwnagotchi hardware..."
+
+	@echo "    - Updating $(CONFIG_TXT)..."
+	@# Ensure SPI, I2C, DWC2 overlay, and UART are enabled in config.txt
+	@# Use sed to uncomment if present, or append if not.
+	@# dtparam=spi=on
+	@echo "    - Backing up original boot files (if backups don't exist)..."
+	@if [ ! -f "$(CONFIG_TXT).bak" ]; then \
+		sudo cp $(CONFIG_TXT) $(CONFIG_TXT).bak; \
+		echo "      - $(CONFIG_TXT) backed up to $(CONFIG_TXT).bak"; \
+	else \
+		echo "      - Backup for $(CONFIG_TXT) already exists. Skipping."; \
+	fi
+	@if [ ! -f "$(CMDLINE_TXT).bak" ]; then \
+		sudo cp $(CMDLINE_TXT) $(CMDLINE_TXT).bak; \
+		echo "      - $(CMDLINE_TXT) backed up to $(CMDLINE_TXT).bak"; \
+	else \
+		echo "      - Backup for $(CMDLINE_TXT) already exists. Skipping."; \
+	fi
+	sudo sed -i '/^#dtparam=spi=on/s/^#//' $(CONFIG_TXT)
+	@grep -q '^dtparam=spi=on' $(CONFIG_TXT) || echo 'dtparam=spi=on' | sudo tee -a $(CONFIG_TXT) > /dev/null
+
+	@# dtparam=i2c_arm=on
+	sudo sed -i '/^#dtparam=i2c_arm=on/s/^#//' $(CONFIG_TXT)
+	@grep -q '^dtparam=i2c_arm=on' $(CONFIG_TXT) || echo 'dtparam=i2c_arm=on' | sudo tee -a $(CONFIG_TXT) > /dev/null
+
+	@# dtoverlay=dwc2
+	sudo sed -i '/^#dtoverlay=dwc2/s/^#//' $(CONFIG_TXT)
+	@grep -q '^dtoverlay=dwc2' $(CONFIG_TXT) || echo 'dtoverlay=dwc2' | sudo tee -a $(CONFIG_TXT) > /dev/null
+
+	@# enable_uart=1
+	sudo sed -i '/^#enable_uart=1/s/^#//' $(CONFIG_TXT)
+	@grep -q '^enable_uart=1' $(CONFIG_TXT) || echo 'enable_uart=1' | sudo tee -a $(CONFIG_TXT) > /dev/null
+
+	@echo "    - Updating $(CMDLINE_TXT)..."
+	@# Ensure modules-load=dwc2,g_ether is present in cmdline.txt
+	@# Read current cmdline.txt content
+	CMDLINE_CONTENT=$$(sudo cat $(CMDLINE_TXT)); \
+	if ! echo "$$CMDLINE_CONTENT" | grep -q 'modules-load=dwc2,g_ether'; then \
+		echo "    Adding 'modules-load=dwc2,g_ether' to $(CMDLINE_TXT)..."; \
+		sudo sed -i 's/$$/ modules-load=dwc2,g_ether/' $(CMDLINE_TXT); \
+	else \
+		echo "    'modules-load=dwc2,g_ether' already present in $(CMDLINE_TXT). Skipping."; \
+	fi;
+	@echo "Boot configuration update complete. A reboot is required for changes to take effect."
 
 ##@ Uninstallation
 
-uninstall: uninstall-service uninstall-pwnagotchi ## Run the full uninstallation process.
+uninstall: uninstall-service uninstall-pwnagotchi restore-boot-config ## Run the full uninstallation process, including restoring boot files.
 
 uninstall-service:
 	@echo "--> Disabling and stopping all Pwnagotchi-related services..."
@@ -425,39 +546,55 @@ uninstall-service:
 	-sudo systemctl disable pwngrid-peer.service
 	-sudo systemctl stop bettercap.service
 	-sudo systemctl disable bettercap.service
+	-sudo systemctl stop monitor-mode.service
+	-sudo systemctl disable monitor-mode.service
 	-sudo rm /etc/systemd/system/$(PROJECT_NAME).service
 	-sudo rm /etc/systemd/system/pwngrid-peer.service
+	-sudo rm /etc/systemd/system/bettercap.service
+	-sudo rm /etc/systemd/system/monitor-mode.service
 	-sudo rm /usr/bin/bettercap-launcher
-	-sudo systemctl daemon-reload
+	-sudo rm /usr/bin/pwnagotchi-launcher
+	-sudo systemctl daemon-reload || true
 
 uninstall-pwnagotchi:
 	@echo "--> Removing Pwnagotchi application, environment, and configuration files..."
 	-sudo rm -rf $(APP_DIR)
+	-sudo rm -rf $(VENV_DIR)
 	-sudo rm -rf $(CONFIG_DIR)
-	@echo "✅ Uninstallation complete. (Note: Bettercap/Nexmon drivers must be manually uninstalled if no longer needed.)"
+	@echo "Uninstallation complete. (Note: Bettercap/Nexmon drivers must be manually uninstalled if no longer needed.)"
 
 ##@ Service Control
 
-start: ## Start the pwnagotchi systemd service.
+start: ## Start only the main pwnagotchi systemd service.
 	sudo systemctl start $(PROJECT_NAME).service
 
-stop: ## Stop the pwnagotchi systemd service.
-	sudo systemctl stop $(PROJECT_NAME).service
+stop: ## Stop only the main pwnagotchi systemd service.
+	-sudo systemctl stop $(PROJECT_NAME).service
 
-restart: ## Restart the pwnagotchi systemd service.
+restart: ## Restart only the main pwnagotchi systemd service.
 	sudo systemctl restart $(PROJECT_NAME).service
 
-status: ## Check the status of the pwnagotchi systemd service.
+start-all: ## Start all Pwnagotchi-related services in the correct order.
+	@echo "--> Starting all Pwnagotchi services..."
+	sudo systemctl start bettercap.service
+	sudo systemctl start pwngrid-peer.service
+	sudo systemctl start $(PROJECT_NAME).service
+
+stop-all: ## Stop all Pwnagotchi-related services.
+	@echo "--> Stopping all Pwnagotchi services..."
+	-sudo systemctl stop $(PROJECT_NAME).service
+	-sudo systemctl stop pwngrid-peer.service
+	-sudo systemctl stop bettercap.service
+
+status: ## Check the status of all Pwnagotchi-related services.
 	@echo "--- Pwnagotchi Service Status ---"
 	sudo systemctl status $(PROJECT_NAME).service || echo "Pwnagotchi service not found/active."
 	@echo "\n--- Pwngrid Service Status ---"
 	sudo systemctl status pwngrid-peer.service || echo "Pwngrid service not found/active."
-	@echo "\n--- Bettercap is a prerequisite service; verify its installation: ---"
-	@if [ -f /usr/bin/bettercap ]; then \
-	    /usr/bin/bettercap -version; \
-	else \
-		echo "⚠️ Bettercap binary not found at /usr/bin/bettercap. Please run 'make install-deps'."; \
-	fi
+	@echo "\n--- Bettercap Service Status ---"
+	sudo systemctl status bettercap.service || echo "Bettercap service not found/active."
+	@echo "\n--- Monitor Mode Service Status ---"
+	sudo systemctl status monitor-mode.service || echo "Monitor Mode service not found/active."
 
 logs: ## Tail the logs for the pwnagotchi service.
 	sudo journalctl -u $(PROJECT_NAME).service -f
@@ -478,7 +615,7 @@ verify-nexmon: ## Verify that the Nexmon driver is loaded and monitor mode works
 	@if iw dev | grep -q "wlan0mon"; then \
 		sudo aireplay-ng --test wlan0mon; \
 	else \
-		echo "⚠️  wlan0mon interface not found. Cannot test injection."; \
+		echo "wlan0mon interface not found. Cannot test injection."; \
 		echo "   ... run 'sudo airmon-ng start wlan0' manually to resolve."; \
 	fi
 
