@@ -136,29 +136,29 @@ setup-nexmon:
 		'#!/bin/bash' \
 		'set -e' \
 		'echo "=== Setting up wlan0mon (Kali/Nexmon 2025 - FINAL & WORKING) ==="' \
+		'# Wait up to 30 seconds for the physical wlan0 interface to appear.' \
+		'for i in {1..30}; do' \
+		'    if ip link show wlan0 >/dev/null 2>&1; then' \
+		'        echo "Physical interface wlan0 is present."' \
+		'        break' \
+		'    fi' \
+		'    echo "Waiting for physical interface wlan0 to appear..."' \
+		'    sleep 1' \
+		'done' \
+		'if ! ip link show wlan0 >/dev/null 2>&1; then' \
+		'    echo "ERROR: Physical interface wlan0 did not appear after 30s."' \
+		'    exit 1' \
+		'fi' \
 		'if ip link show wlan0mon >/dev/null 2>&1 && ip link show wlan0mon | grep -qE "state (UP|UNKNOWN)"; then' \
 		'    echo "wlan0mon already exists and is UP/UNKNOWN -> ready"' \
 		'    touch /run/wlan0mon.ready 2>/dev/null || true' \
 		'    exit 0' \
 		'fi' \
 		'echo "Cleaning old state..."' \
-		'airmon-ng check kill >/dev/null 2>&1 || true' \
-		'ip link delete wlan0mon 2>/dev/null || true' \
+		'sudo airmon-ng check kill >/dev/null 2>&1 || true' \
+		'sudo ip link delete wlan0mon 2>/dev/null || true' \
 		'echo "Creating fresh monitor interface..."' \
-		'airmon-ng start wlan0 >/dev/null 2>&1 || true' \
-		'iw dev wlan0mon set type monitor 2>/dev/null || true' \
-		'ip link set dev wlan0mon up 2>/dev/null || true' \
-		'for i in {1..15}; do' \
-		'    STATE=$(ip link show wlan0mon 2>/dev/null | grep -o "state [A-Z]*" || echo "")' \
-		'    if [ "$$STATE" = "state UP" ] || [ "$$STATE" = "state UNKNOWN" ]; then' \
-		'        echo "wlan0mon is UP and ready"' \
-		'        touch /run/wlan0mon.ready' \
-		'        exit 0' \
-		'    fi' \
-		'    sleep 1' \
-		'done' \
-		'echo "ERROR: wlan0mon failed after 15s"' \
-		'exit 1' \
+		'sudo airmon-ng start wlan0' \
 		| sudo tee /usr/local/sbin/setup-wlan0mon.sh > /dev/null
 	sudo chmod +x /usr/local/sbin/setup-wlan0mon.sh
 	@echo "Fixed Nexmon glue script installed."
@@ -177,8 +177,7 @@ setup-monitor-service:
 		'RemainAfterExit=yes' \
 		'TimeoutStartSec=90' \
 		'ExecStart=/usr/local/sbin/setup-wlan0mon.sh' \
-		'Restart=on-failure' \
-		'RestartSec=5' \
+		'Restart=no' \
 		'ExecStop=/usr/local/sbin/teardown-wlan0mon.sh' \
 		'' \
 		'[Install]' \
@@ -242,8 +241,8 @@ setup-bettercap: install-deps
 	@printf '%s\n' \
 		'[Unit]' \
 		'Description=Bettercap service for Pwnagotchi' \
-		'After=network-online.target monitor-mode.service' \
-		'Requires=monitor-mode.service' \
+		'After=monitor-mode.service' \
+		'BindsTo=monitor-mode.service' \
 		'' \
 		'[Service]' \
 		'Type=simple' \
@@ -348,8 +347,8 @@ setup-pwngrid: setup-libpcap-compat
 	@printf '%s\n' \
 		'[Unit]' \
 		'Description=pwngrid peer service' \
-		'After=network-online.target monitor-mode.service' \
-		'Requires=monitor-mode.service' \
+		'After=monitor-mode.service' \
+		'BindsTo=monitor-mode.service' \
 		'' \
 		'[Service]' \
 		'Environment=LD_PRELOAD=/usr/local/lib/libpcap.so.1' \
@@ -479,8 +478,8 @@ setup-service:
 	@printf '%s\n' \
 		'[Unit]' \
 		'Description=Pwnagotchi deep reinforcement learning' \
-		'After=network-online.target pwngrid-peer.service bettercap.service monitor-mode.service' \
-		'Wants=pwngrid-peer.service bettercap.service monitor-mode.service' \
+		'After=pwngrid-peer.service bettercap.service' \
+		'Wants=pwngrid-peer.service bettercap.service' \
 		'' \
 		'[Service]' \
 		'# Pwnagotchi must be run as root to access wifi/bettercap' \
